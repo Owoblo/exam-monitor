@@ -361,6 +361,12 @@ def grid_dashboard():
     with open('grid-dashboard.html', 'r') as f:
         return f.read()
 
+@app.route('/demo')
+def demo():
+    """Split-screen demo view - student simulation + live monitoring"""
+    with open('demo.html', 'r') as f:
+        return f.read()
+
 @app.route('/')
 def index():
     return '''
@@ -415,8 +421,9 @@ def index():
             <h1>🔒 Exam Monitor Server Running</h1>
             <p>Ready to receive flags from browser extension</p>
             <div class="button-group">
+                <a href="/demo" style="background: #00843D;">🎯 DEMO (Recommended)</a>
+                <a href="/grid" class="grid-link">📹 Grid View</a>
                 <a href="/dashboard">📊 List Dashboard</a>
-                <a href="/grid" class="grid-link">🎯 Grid View (Demo)</a>
             </div>
         </div>
     </body>
@@ -429,9 +436,11 @@ if __name__ == '__main__':
     debug = os.environ.get('FLASK_ENV') != 'production'
 
     print("=" * 60)
-    print("🚀 EXAM INTEGRITY MONITOR SERVER")
+    print("🚀 ST. CLAIR COLLEGE - EXAM INTEGRITY MONITOR")
     print("=" * 60)
-    print(f"📊 Dashboard: http://localhost:{port}/dashboard")
+    print(f"🎯 DEMO (Recommended): http://localhost:{port}/demo")
+    print(f"📹 Grid View: http://localhost:{port}/grid")
+    print(f"📊 List Dashboard: http://localhost:{port}/dashboard")
     print(f"🔌 API Endpoint: http://localhost:{port}/flag")
     print("=" * 60)
     print("✅ Server is running and waiting for flags...\n")
