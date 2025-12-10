@@ -1,0 +1,559 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Exam Monitor - Grid View Dashboard</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif;
+            background: #1a1a2e;
+            color: white;
+            overflow: hidden;
+        }
+
+        .header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            padding: 20px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.3);
+        }
+
+        .header h1 {
+            font-size: 24px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .stats {
+            display: flex;
+            gap: 30px;
+        }
+
+        .stat {
+            text-align: center;
+        }
+
+        .stat-number {
+            font-size: 28px;
+            font-weight: bold;
+        }
+
+        .stat-label {
+            font-size: 12px;
+            opacity: 0.9;
+        }
+
+        .live-badge {
+            background: #e74c3c;
+            padding: 8px 15px;
+            border-radius: 20px;
+            font-size: 12px;
+            font-weight: bold;
+            animation: pulse 2s infinite;
+        }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.7; }
+        }
+
+        .grid-container {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+            gap: 20px;
+            padding: 20px;
+            height: calc(100vh - 100px);
+            overflow-y: auto;
+        }
+
+        .student-tile {
+            background: #16213e;
+            border-radius: 10px;
+            overflow: hidden;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.3);
+            transition: all 0.3s ease;
+            position: relative;
+        }
+
+        .student-tile:hover {
+            transform: translateY(-5px);
+            box-shadow: 0 8px 12px rgba(0,0,0,0.4);
+        }
+
+        .student-tile.flagged {
+            animation: flash 1s ease-in-out;
+            border: 3px solid #e74c3c;
+        }
+
+        @keyframes flash {
+            0%, 100% { background: #16213e; }
+            50% { background: #e74c3c; }
+        }
+
+        .student-header {
+            background: #0f3460;
+            padding: 15px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .student-id {
+            font-weight: bold;
+            font-size: 16px;
+        }
+
+        .status-badge {
+            padding: 5px 10px;
+            border-radius: 12px;
+            font-size: 11px;
+            font-weight: bold;
+        }
+
+        .status-safe {
+            background: #27ae60;
+            color: white;
+        }
+
+        .status-flagged {
+            background: #e74c3c;
+            color: white;
+            animation: blink 1s infinite;
+        }
+
+        @keyframes blink {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+
+        .screen-preview {
+            width: 100%;
+            height: 200px;
+            background: #000;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            position: relative;
+        }
+
+        .screen-preview img {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+        }
+
+        .no-screen {
+            color: #666;
+            font-size: 14px;
+        }
+
+        .violation-overlay {
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(231, 76, 60, 0.8);
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            font-size: 24px;
+            font-weight: bold;
+            opacity: 0;
+            transition: opacity 0.3s;
+        }
+
+        .student-tile.flagged .violation-overlay {
+            opacity: 1;
+        }
+
+        .student-info {
+            padding: 15px;
+        }
+
+        .info-row {
+            display: flex;
+            justify-content: space-between;
+            margin: 5px 0;
+            font-size: 12px;
+        }
+
+        .info-label {
+            color: #95a5a6;
+        }
+
+        .info-value {
+            color: white;
+            font-weight: bold;
+        }
+
+        .last-activity {
+            font-size: 11px;
+            color: #7f8c8d;
+            margin-top: 10px;
+        }
+
+        .violation-badge {
+            background: #e74c3c;
+            color: white;
+            padding: 5px 10px;
+            border-radius: 5px;
+            font-size: 11px;
+            font-weight: bold;
+            margin-top: 5px;
+            display: inline-block;
+        }
+
+        .alert-panel {
+            position: fixed;
+            top: 100px;
+            right: 20px;
+            width: 300px;
+            max-height: 400px;
+            overflow-y: auto;
+            z-index: 1000;
+        }
+
+        .alert-item {
+            background: #e74c3c;
+            padding: 15px;
+            margin-bottom: 10px;
+            border-radius: 8px;
+            animation: slideIn 0.3s ease-out;
+        }
+
+        @keyframes slideIn {
+            from {
+                transform: translateX(100%);
+                opacity: 0;
+            }
+            to {
+                transform: translateX(0);
+                opacity: 1;
+            }
+        }
+
+        .alert-time {
+            font-size: 11px;
+            opacity: 0.8;
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>
+            🎓 Exam Monitor - Live Grid View
+        </h1>
+        <div class="stats">
+            <div class="stat">
+                <div class="stat-number" id="totalStudents">0</div>
+                <div class="stat-label">Students Monitored</div>
+            </div>
+            <div class="stat">
+                <div class="stat-number" id="totalViolations">0</div>
+                <div class="stat-label">Violations</div>
+            </div>
+            <div class="stat">
+                <div class="stat-number" id="activeExam">MIT123</div>
+                <div class="stat-label">Exam Session</div>
+            </div>
+        </div>
+        <div class="live-badge">
+            🔴 LIVE
+        </div>
+    </div>
+
+    <div class="grid-container" id="gridContainer">
+        <!-- Student tiles will be inserted here -->
+    </div>
+
+    <div class="alert-panel" id="alertPanel">
+        <!-- Live alerts appear here -->
+    </div>
+
+    <script>
+        // Connect to Server-Sent Events for real-time updates
+        const eventSource = new EventSource('http://localhost:5001/stream');
+
+        // Store student data
+        const students = {};
+        let violationCount = 0;
+
+        // Initialize with demo students
+        function initializeDemoStudents() {
+            const demoStudents = [
+                'DEMO-12345',
+                'STU-10001',
+                'STU-10002',
+                'STU-10003',
+                'STU-10004',
+                'STU-10005'
+            ];
+
+            demoStudents.forEach(id => {
+                students[id] = {
+                    id: id,
+                    status: 'safe',
+                    lastActivity: 'Taking exam...',
+                    violations: 0,
+                    currentSite: 'Exam Portal',
+                    screenshot: null,
+                    lastUpdate: new Date()
+                };
+            });
+
+            updateGrid();
+        }
+
+        // Handle incoming events
+        eventSource.onmessage = function(event) {
+            const message = JSON.parse(event.data);
+
+            if (message.type === 'new_flag') {
+                handleViolation(message.data);
+            } else if (message.type === 'live_screen_update') {
+                handleLiveScreenUpdate(message.studentId, message.data);
+            } else if (message.type === 'heartbeat') {
+                console.log('💓 Connection alive');
+            }
+        };
+
+        // Load initial live screens
+        async function loadLiveScreens() {
+            try {
+                const response = await fetch('http://localhost:5001/live-screens');
+                const screens = await response.json();
+
+                Object.keys(screens).forEach(studentId => {
+                    handleLiveScreenUpdate(studentId, screens[studentId]);
+                });
+            } catch (error) {
+                console.error('Failed to load live screens:', error);
+            }
+        }
+
+        function handleLiveScreenUpdate(studentId, data) {
+            console.log('📹 Live screen update:', studentId);
+
+            // Create or update student
+            if (!students[studentId]) {
+                students[studentId] = {
+                    id: studentId,
+                    status: 'safe',
+                    lastActivity: 'Taking exam...',
+                    violations: 0,
+                    currentSite: '',
+                    screenshot: null,
+                    lastUpdate: new Date()
+                };
+            }
+
+            // Update with live data
+            students[studentId].screenshot = data.screenshot;
+            students[studentId].currentSite = extractDomain(data.currentUrl);
+            students[studentId].lastActivity = data.currentTitle || 'Browsing...';
+            students[studentId].lastUpdate = new Date();
+
+            updateGrid();
+            updateStats();
+        }
+
+        function extractDomain(url) {
+            try {
+                const urlObj = new URL(url);
+                return urlObj.hostname.replace('www.', '');
+            } catch {
+                return 'Unknown';
+            }
+        }
+
+        eventSource.onerror = function(error) {
+            console.error('SSE connection error:', error);
+        };
+
+        function handleViolation(flagData) {
+            console.log('🚨 Violation detected!', flagData);
+
+            const studentId = flagData.studentId;
+
+            // Update student data
+            if (!students[studentId]) {
+                students[studentId] = {
+                    id: studentId,
+                    status: 'safe',
+                    lastActivity: '',
+                    violations: 0,
+                    currentSite: '',
+                    screenshot: null,
+                    lastUpdate: new Date()
+                };
+            }
+
+            students[studentId].status = 'flagged';
+            students[studentId].violations++;
+            students[studentId].currentSite = flagData.domain;
+            students[studentId].screenshot = flagData.screenshot;
+            students[studentId].violationType = flagData.flagType || 'ACCESS';
+            students[studentId].lastActivity = getViolationText(flagData);
+            students[studentId].lastUpdate = new Date();
+
+            violationCount++;
+            updateStats();
+            updateGrid();
+            showAlert(flagData);
+
+            // Play alert sound
+            playAlertSound();
+
+            // Reset status after 10 seconds
+            setTimeout(() => {
+                if (students[studentId]) {
+                    students[studentId].status = 'warning';
+                    updateGrid();
+                }
+            }, 10000);
+        }
+
+        function getViolationText(flagData) {
+            const type = flagData.flagType || 'ACCESS';
+            switch(type) {
+                case 'PASTE':
+                    return '📋 Pasted text into ' + flagData.domain;
+                case 'COPY':
+                    return '📄 Copied from ' + flagData.domain;
+                case 'TYPING':
+                    return '⌨️ Typing in ' + flagData.domain;
+                default:
+                    return '🌐 Accessed ' + flagData.domain;
+            }
+        }
+
+        function updateGrid() {
+            const container = document.getElementById('gridContainer');
+            container.innerHTML = '';
+
+            Object.values(students).forEach(student => {
+                const tile = createStudentTile(student);
+                container.appendChild(tile);
+            });
+        }
+
+        function createStudentTile(student) {
+            const tile = document.createElement('div');
+            tile.className = 'student-tile';
+            if (student.status === 'flagged') {
+                tile.classList.add('flagged');
+            }
+
+            const statusClass = student.status === 'flagged' ? 'status-flagged' : 'status-safe';
+            const statusText = student.status === 'flagged' ? '🚨 FLAGGED' : '✅ Safe';
+
+            tile.innerHTML = `
+                <div class="student-header">
+                    <span class="student-id">${student.id}</span>
+                    <span class="status-badge ${statusClass}">${statusText}</span>
+                </div>
+
+                <div class="screen-preview">
+                    ${student.screenshot
+                        ? `<img src="${student.screenshot}" alt="Student screen">`
+                        : '<div class="no-screen">No recent activity</div>'
+                    }
+                    ${student.status === 'flagged'
+                        ? `<div class="violation-overlay">
+                             <div>⚠️ VIOLATION</div>
+                             <div style="font-size: 14px; margin-top: 10px;">${student.violationType}</div>
+                           </div>`
+                        : ''
+                    }
+                </div>
+
+                <div class="student-info">
+                    <div class="info-row">
+                        <span class="info-label">Current Site:</span>
+                        <span class="info-value">${student.currentSite || 'Exam Portal'}</span>
+                    </div>
+                    <div class="info-row">
+                        <span class="info-label">Violations:</span>
+                        <span class="info-value" style="color: ${student.violations > 0 ? '#e74c3c' : '#27ae60'}">
+                            ${student.violations}
+                        </span>
+                    </div>
+                    ${student.status === 'flagged'
+                        ? `<div class="violation-badge">${student.lastActivity}</div>`
+                        : ''
+                    }
+                    <div class="last-activity">
+                        Last update: ${formatTime(student.lastUpdate)}
+                    </div>
+                </div>
+            `;
+
+            return tile;
+        }
+
+        function showAlert(flagData) {
+            const alertPanel = document.getElementById('alertPanel');
+            const alert = document.createElement('div');
+            alert.className = 'alert-item';
+
+            alert.innerHTML = `
+                <strong>🚨 ${flagData.studentId}</strong><br>
+                ${getViolationText(flagData)}<br>
+                <div class="alert-time">${new Date().toLocaleTimeString()}</div>
+            `;
+
+            alertPanel.insertBefore(alert, alertPanel.firstChild);
+
+            // Remove after 10 seconds
+            setTimeout(() => {
+                alert.style.opacity = '0';
+                setTimeout(() => alert.remove(), 300);
+            }, 10000);
+        }
+
+        function updateStats() {
+            document.getElementById('totalStudents').textContent = Object.keys(students).length;
+            document.getElementById('totalViolations').textContent = violationCount;
+        }
+
+        function formatTime(date) {
+            return date.toLocaleTimeString();
+        }
+
+        function playAlertSound() {
+            // Create a simple beep
+            const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+            const oscillator = audioContext.createOscillator();
+            const gainNode = audioContext.createGain();
+
+            oscillator.connect(gainNode);
+            gainNode.connect(audioContext.destination);
+
+            oscillator.frequency.value = 800;
+            oscillator.type = 'sine';
+
+            gainNode.gain.setValueAtTime(0.3, audioContext.currentTime);
+            gainNode.gain.exponentialRampToValueAtTime(0.01, audioContext.currentTime + 0.5);
+
+            oscillator.start(audioContext.currentTime);
+            oscillator.stop(audioContext.currentTime + 0.5);
+        }
+
+        // Initialize on load
+        initializeDemoStudents();  // Show demo students initially
+        loadLiveScreens();  // Load any existing live screens
+        updateStats();
+    </script>
+</body>
+</html>
