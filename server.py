@@ -388,6 +388,239 @@ def demo():
     with open('demo.html', 'r') as f:
         return f.read()
 
+@app.route('/join')
+def join_exam():
+    """Student join page — share screen via browser, no extension needed"""
+    html = '''<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Join Exam Session — St. Clair College</title>
+    <style>
+        *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+            background: #f4f5f7;
+            color: #333;
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+        }
+        .card {
+            background: #fff;
+            border-radius: 8px;
+            box-shadow: 0 2px 12px rgba(0,0,0,0.08);
+            padding: 40px;
+            max-width: 420px;
+            width: 90%;
+            text-align: center;
+        }
+        .card img { height: 32px; margin-bottom: 20px; }
+        .card h1 { font-size: 18px; font-weight: 600; color: #222; margin-bottom: 6px; }
+        .card p { font-size: 13px; color: #888; margin-bottom: 24px; line-height: 1.5; }
+        .field {
+            margin-bottom: 16px;
+            text-align: left;
+        }
+        .field label {
+            display: block;
+            font-size: 12px;
+            font-weight: 600;
+            color: #555;
+            margin-bottom: 4px;
+        }
+        .field input {
+            width: 100%;
+            padding: 10px 12px;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+            font-size: 14px;
+            outline: none;
+        }
+        .field input:focus { border-color: #4a90d9; }
+        .btn {
+            display: inline-block;
+            width: 100%;
+            padding: 12px;
+            background: #00843D;
+            color: #fff;
+            border: none;
+            border-radius: 5px;
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+        }
+        .btn:hover { background: #006e33; }
+        .btn:disabled { background: #aaa; cursor: not-allowed; }
+        .status {
+            margin-top: 20px;
+            font-size: 13px;
+            color: #666;
+        }
+        .status.active { color: #00843D; }
+        .status.error { color: #d63031; }
+        .preview {
+            margin-top: 16px;
+            border-radius: 6px;
+            overflow: hidden;
+            border: 1px solid #e0e0e0;
+            display: none;
+        }
+        .preview img {
+            width: 100%;
+            display: block;
+        }
+        .dot {
+            display: inline-block;
+            width: 7px; height: 7px;
+            background: #d63031;
+            border-radius: 50%;
+            margin-right: 5px;
+            animation: pulse 2s infinite;
+            vertical-align: middle;
+        }
+        @keyframes pulse { 0%,100%{opacity:1;} 50%{opacity:0.3;} }
+        .stop-btn {
+            margin-top: 12px;
+            padding: 8px 20px;
+            background: #fff;
+            color: #d63031;
+            border: 1px solid #d63031;
+            border-radius: 5px;
+            font-size: 12px;
+            cursor: pointer;
+        }
+        .stop-btn:hover { background: #ffeaea; }
+    </style>
+</head>
+<body>
+    <div class="card">
+        <img src="/scc-logo.svg" alt="St. Clair College">
+        <h1>Join Exam Session</h1>
+        <p id="intro">Enter your student ID and share your screen to join the monitored exam session.</p>
+
+        <div id="setupForm">
+            <div class="field">
+                <label>Student ID</label>
+                <input type="text" id="studentId" placeholder="e.g. W0871234" autofocus>
+            </div>
+            <button class="btn" id="joinBtn" onclick="startSharing()">Share Screen & Join</button>
+        </div>
+
+        <div id="activeView" style="display:none;">
+            <div class="status active"><span class="dot"></span>Screen is being shared</div>
+            <div class="preview" id="preview"><img id="previewImg"></div>
+            <button class="stop-btn" onclick="stopSharing()">Stop Sharing</button>
+        </div>
+
+        <div class="status" id="status"></div>
+    </div>
+
+    <script>
+        let stream = null;
+        let captureInterval = null;
+        const canvas = document.createElement('canvas');
+        const ctx = canvas.getContext('2d');
+        const video = document.createElement('video');
+
+        async function startSharing() {
+            const idInput = document.getElementById('studentId');
+            const studentId = idInput.value.trim();
+            if (!studentId) { idInput.focus(); return; }
+
+            document.getElementById('joinBtn').disabled = true;
+            document.getElementById('status').textContent = 'Requesting screen access...';
+
+            try {
+                stream = await navigator.mediaDevices.getDisplayMedia({
+                    video: { cursor: 'always' },
+                    audio: false
+                });
+
+                video.srcObject = stream;
+                await video.play();
+
+                // Show active state
+                document.getElementById('setupForm').style.display = 'none';
+                document.getElementById('activeView').style.display = '';
+                document.getElementById('intro').textContent = 'Student: ' + studentId;
+                document.getElementById('status').textContent = '';
+                document.getElementById('preview').style.display = '';
+
+                // Handle user stopping share via browser UI
+                stream.getVideoTracks()[0].onended = () => stopSharing();
+
+                // Capture and send every 4 seconds
+                captureAndSend(studentId);
+                captureInterval = setInterval(() => captureAndSend(studentId), 4000);
+
+            } catch (err) {
+                document.getElementById('status').className = 'status error';
+                document.getElementById('status').textContent = 'Screen share was denied or cancelled.';
+                document.getElementById('joinBtn').disabled = false;
+            }
+        }
+
+        async function captureAndSend(studentId) {
+            if (!stream || !stream.active) return;
+
+            canvas.width = video.videoWidth;
+            canvas.height = video.videoHeight;
+            ctx.drawImage(video, 0, 0);
+
+            const screenshot = canvas.toDataURL('image/jpeg', 0.5);
+
+            // Show preview
+            document.getElementById('previewImg').src = screenshot;
+
+            // Detect if current page might be flagged
+            // (We can't access the shared tab's URL from getDisplayMedia,
+            //  so the extension handles URL detection. This just sends the screen.)
+
+            try {
+                await fetch('/live-update', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        studentId: studentId,
+                        screenshot: screenshot,
+                        currentUrl: 'screen-share://browser',
+                        currentTitle: 'Screen Share',
+                        timestamp: new Date().toISOString(),
+                        type: 'LIVE_UPDATE'
+                    })
+                });
+            } catch (e) {
+                console.error('Failed to send update:', e);
+            }
+        }
+
+        function stopSharing() {
+            if (captureInterval) clearInterval(captureInterval);
+            if (stream) stream.getTracks().forEach(t => t.stop());
+            stream = null;
+
+            document.getElementById('setupForm').style.display = '';
+            document.getElementById('activeView').style.display = 'none';
+            document.getElementById('joinBtn').disabled = false;
+            document.getElementById('intro').textContent = 'Enter your student ID and share your screen to join the monitored exam session.';
+            document.getElementById('status').className = 'status';
+            document.getElementById('status').textContent = 'Screen sharing stopped.';
+            document.getElementById('preview').style.display = 'none';
+        }
+
+        // Enter key triggers join
+        document.getElementById('studentId').addEventListener('keydown', function(e) {
+            if (e.key === 'Enter') startSharing();
+        });
+    </script>
+</body>
+</html>'''
+    return html
+
 @app.route('/scc-logo.svg')
 def scc_logo():
     return send_from_directory('.', 'scc-logo.svg', mimetype='image/svg+xml')
@@ -813,10 +1046,10 @@ def index():
             <h1>🔒 Exam Monitor Server Running</h1>
             <p>Ready to receive flags from browser extension</p>
             <div class="button-group">
-                <a href="/monitor" style="background: #111;">Monitor</a>
-                <a href="/demo" style="background: #00843D;">Demo</a>
+                <a href="/monitor" style="background: #111;">Professor View</a>
+                <a href="/join" style="background: #00843D;">Student Join</a>
                 <a href="/grid" class="grid-link">Grid View</a>
-                <a href="/dashboard">List Dashboard</a>
+                <a href="/dashboard">Log View</a>
             </div>
         </div>
     </body>
