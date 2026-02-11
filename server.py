@@ -534,6 +534,7 @@ def join_exam():
         <div id="activeView" style="display:none;">
             <div class="status active"><span class="dot"></span>Screen is being shared</div>
             <div class="preview" id="preview"><img id="previewImg"></div>
+            <div id="captureStats" style="font-size:11px;color:#aaa;margin-top:8px;">Captures: 0 | Flags: 0</div>
             <button class="stop-btn" onclick="stopSharing()">Stop Sharing</button>
         </div>
 
@@ -546,9 +547,16 @@ def join_exam():
         let activeStudentId = null;
         let tabAwayCount = 0;
         let lastFlaggedLabel = '';
+        let captureCount = 0;
+        let flagCount = 0;
         const canvas = document.createElement('canvas');
         const ctx = canvas.getContext('2d');
         const video = document.createElement('video');
+
+        function updateStats() {
+            const el = document.getElementById('captureStats');
+            if (el) el.textContent = 'Captures: ' + captureCount + ' | Flags: ' + flagCount;
+        }
 
         // Web Worker that keeps ticking even when tab is in background
         function startWorkerTimer(studentId) {
@@ -650,15 +658,42 @@ def join_exam():
             }
         }
 
-        // Detect when student leaves this tab (debounced to avoid duplicate flags)
+        // Detect when student leaves this tab
+        // Uses sendBeacon for reliability (fetch can get cancelled on page hide)
         let lastSwitchTime = 0;
         function handleTabLeave(type, detail) {
             if (!activeStudentId || !stream) return;
             const now = Date.now();
-            if (now - lastSwitchTime < 2000) return; // debounce 2s
+            if (now - lastSwitchTime < 3000) return; // debounce 3s
             lastSwitchTime = now;
             tabAwayCount++;
-            sendFlag(activeStudentId, type, detail + ' (switch #' + tabAwayCount + ')');
+            sendFlagBeacon(activeStudentId, type, detail + ' (switch #' + tabAwayCount + ')');
+        }
+
+        // sendBeacon version — guaranteed delivery even when page is hiding
+        function sendFlagBeacon(studentId, flagType, detail, domain) {
+            let screenshot = null;
+            try {
+                if (stream && stream.active && video.videoWidth > 0) {
+                    canvas.width = video.videoWidth;
+                    canvas.height = video.videoHeight;
+                    ctx.drawImage(video, 0, 0);
+                    screenshot = canvas.toDataURL('image/jpeg', 0.5);
+                }
+            } catch(e) {}
+
+            const payload = JSON.stringify({
+                studentId: studentId,
+                domain: domain || flagType,
+                fullUrl: detail,
+                flagType: flagType,
+                timestamp: new Date().toISOString(),
+                screenshot: screenshot
+            });
+            // sendBeacon is fire-and-forget, survives page hide
+            navigator.sendBeacon('/flag', new Blob([payload], { type: 'application/json' }));
+            flagCount++;
+            updateStats();
         }
 
         document.addEventListener('visibilitychange', function() {
@@ -697,10 +732,27 @@ def join_exam():
         }
 
         let sendingInProgress = false;
+        let wasHidden = false;
+        let hiddenSince = 0;
         async function captureAndSend(studentId) {
             if (!stream || !stream.active) return;
-            if (sendingInProgress) return; // skip if previous send still in-flight
+            if (sendingInProgress) return;
             sendingInProgress = true;
+
+            // Periodic check: is this tab still hidden? Flag every 10 seconds of hidden time
+            if (document.hidden) {
+                if (!wasHidden) {
+                    wasHidden = true;
+                    hiddenSince = Date.now();
+                } else if (Date.now() - hiddenSince > 10000) {
+                    // Student has been away for 10+ seconds — flag it
+                    hiddenSince = Date.now(); // reset so it flags again in 10s
+                    sendFlagBeacon(studentId, 'EXTENDED_ABSENCE',
+                        'Student away from exam tab for extended period');
+                }
+            } else {
+                wasHidden = false;
+            }
 
             const track = stream.getVideoTracks()[0];
             const label = track.label || '';
@@ -709,14 +761,13 @@ def join_exam():
             let currentTitle = '';
 
             if (usingCamera) {
-                // Camera mode (mobile) — no AI label detection, just send frames
                 currentTitle = 'Camera Feed';
             } else {
                 // Screen share mode — check track label for AI sites
                 const aiMatch = detectAI(label);
                 if (aiMatch && label !== lastFlaggedLabel) {
                     lastFlaggedLabel = label;
-                    sendFlag(studentId, 'AI_DETECTED',
+                    sendFlagBeacon(studentId, 'AI_DETECTED',
                         'AI tool detected: ' + label + ' (surface: ' + surfaceType + ')',
                         aiMatch);
                 }
@@ -748,6 +799,8 @@ def join_exam():
                         type: 'LIVE_UPDATE'
                     })
                 });
+                captureCount++;
+                updateStats();
             } catch (e) {
                 console.error('Failed to send update:', e);
             } finally {
