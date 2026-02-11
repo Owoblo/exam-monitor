@@ -1,10 +1,11 @@
-from flask import Flask, request, jsonify, render_template_string, Response
+from flask import Flask, request, jsonify, render_template_string, Response, send_from_directory
 from flask_cors import CORS
 from datetime import datetime
 import base64
 import json
 import time
 import queue
+import threading
 
 app = Flask(__name__)
 CORS(app)
@@ -15,8 +16,21 @@ flags = []
 # Store live screenshots for each student
 live_screens = {}  # {studentId: {screenshot, url, timestamp}}
 
-# Queue for real-time updates (SSE)
-update_queue = queue.Queue()
+# SSE: list of per-client queues so multiple viewers all get events
+sse_clients = []
+sse_clients_lock = threading.Lock()
+
+def broadcast(message):
+    """Send an event to every connected SSE client."""
+    with sse_clients_lock:
+        dead = []
+        for q in sse_clients:
+            try:
+                q.put_nowait(message)
+            except Exception:
+                dead.append(q)
+        for q in dead:
+            sse_clients.remove(q)
 
 @app.route('/flag', methods=['POST'])
 def receive_flag():
@@ -25,8 +39,8 @@ def receive_flag():
     flags.append(data)
     print(f"🚨 FLAG: Student {data['studentId']} accessed {data['domain']} at {data['received_at']}")
 
-    # Push to SSE queue for real-time updates
-    update_queue.put({
+    # Push to all SSE clients for real-time updates
+    broadcast({
         'type': 'new_flag',
         'data': data
     })
@@ -48,8 +62,8 @@ def receive_live_update():
         'lastUpdate': datetime.now().strftime('%Y-%m-%d %I:%M:%S %p')
     }
 
-    # Push update via SSE
-    update_queue.put({
+    # Push update to all SSE clients
+    broadcast({
         'type': 'live_screen_update',
         'studentId': student_id,
         'data': live_screens[student_id]
@@ -64,16 +78,23 @@ def get_live_screens():
 
 @app.route('/stream')
 def stream():
-    """Server-Sent Events endpoint for real-time updates"""
+    """Server-Sent Events endpoint for real-time updates (supports multiple viewers)"""
+    client_queue = queue.Queue()
+    with sse_clients_lock:
+        sse_clients.append(client_queue)
+
     def event_stream():
-        while True:
-            try:
-                # Wait for new updates (timeout after 30 seconds to send heartbeat)
-                message = update_queue.get(timeout=30)
-                yield f"data: {json.dumps(message)}\n\n"
-            except queue.Empty:
-                # Send heartbeat to keep connection alive
-                yield f"data: {json.dumps({'type': 'heartbeat'})}\n\n"
+        try:
+            while True:
+                try:
+                    message = client_queue.get(timeout=30)
+                    yield f"data: {json.dumps(message)}\n\n"
+                except queue.Empty:
+                    yield f"data: {json.dumps({'type': 'heartbeat'})}\n\n"
+        finally:
+            with sse_clients_lock:
+                if client_queue in sse_clients:
+                    sse_clients.remove(client_queue)
 
     return Response(event_stream(), mimetype='text/event-stream')
 
@@ -367,6 +388,377 @@ def demo():
     with open('demo.html', 'r') as f:
         return f.read()
 
+@app.route('/scc-logo.svg')
+def scc_logo():
+    return send_from_directory('.', 'scc-logo.svg', mimetype='image/svg+xml')
+
+@app.route('/monitor')
+def monitor():
+    """Minimalist professor dashboard — clean, small fonts, no flash"""
+    html = '''<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Exam Monitor — St. Clair College</title>
+    <style>
+        *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+        html, body {
+            height: 100%;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+            font-size: 13px;
+            background: #f4f5f7;
+            color: #333;
+        }
+        .topbar {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 10px 20px;
+            background: #fff;
+            border-bottom: 1px solid #ddd;
+            position: sticky;
+            top: 0;
+            z-index: 100;
+        }
+        .topbar-left {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            overflow: hidden;
+        }
+        .topbar-left img {
+            height: 24px;
+            width: auto;
+            flex-shrink: 0;
+        }
+        .topbar-left .sep {
+            width: 1px;
+            height: 20px;
+            background: #ddd;
+            flex-shrink: 0;
+        }
+        .topbar h1 {
+            font-size: 14px;
+            font-weight: 600;
+            color: #222;
+            white-space: nowrap;
+        }
+        .topbar-stats {
+            display: flex;
+            gap: 20px;
+            font-size: 12px;
+            color: #666;
+            flex-shrink: 0;
+        }
+        .topbar-stats strong { color: #222; }
+        .dot-live {
+            display: inline-block;
+            width: 7px; height: 7px;
+            background: #d63031;
+            border-radius: 50%;
+            margin-right: 4px;
+            vertical-align: middle;
+            animation: livepulse 2s infinite;
+        }
+        @keyframes livepulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.4; }
+        }
+
+        .main { padding: 16px 20px; }
+
+        .grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+            gap: 14px;
+        }
+        .tile {
+            background: #fff;
+            border: 1px solid #e0e0e0;
+            border-radius: 6px;
+            overflow: hidden;
+            cursor: pointer;
+            transition: box-shadow 0.15s, border-color 0.15s;
+        }
+        .tile:hover {
+            box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+            border-color: #bbb;
+        }
+        .tile.flagged {
+            border-color: #d63031;
+            border-width: 2px;
+        }
+        .tile-screen {
+            width: 100%;
+            aspect-ratio: 16/10;
+            background: #eee;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            overflow: hidden;
+        }
+        .tile-screen img {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+        }
+        .tile-screen .empty {
+            color: #bbb;
+            font-size: 12px;
+        }
+        .tile-info {
+            padding: 8px 10px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            border-top: 1px solid #f0f0f0;
+        }
+        .indicator {
+            width: 8px; height: 8px;
+            border-radius: 50%;
+            flex-shrink: 0;
+            background: #b2bec3;
+        }
+        .indicator.red { background: #d63031; }
+        .tile-text { flex: 1; min-width: 0; }
+        .tile-id {
+            font-weight: 600;
+            font-size: 12px;
+            color: #222;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        .tile-meta {
+            font-size: 11px;
+            color: #888;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            margin-top: 1px;
+        }
+        .tile-violations {
+            font-size: 11px;
+            color: #d63031;
+            font-weight: 700;
+            flex-shrink: 0;
+            background: #ffeaea;
+            padding: 2px 7px;
+            border-radius: 8px;
+        }
+        .empty-state {
+            text-align: center;
+            padding: 80px 20px;
+            color: #999;
+            font-size: 14px;
+        }
+
+        /* Modal */
+        .modal-overlay {
+            display: none;
+            position: fixed;
+            inset: 0;
+            background: rgba(0,0,0,0.55);
+            z-index: 1000;
+            align-items: center;
+            justify-content: center;
+        }
+        .modal-overlay.open { display: flex; }
+        .modal-box {
+            background: #fff;
+            border-radius: 8px;
+            overflow: hidden;
+            max-width: 90vw;
+            max-height: 90vh;
+            box-shadow: 0 12px 40px rgba(0,0,0,0.25);
+            display: flex;
+            flex-direction: column;
+        }
+        .modal-box img {
+            display: block;
+            max-width: 90vw;
+            max-height: calc(90vh - 48px);
+            object-fit: contain;
+        }
+        .modal-bar {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 10px 16px;
+            background: #fafafa;
+            border-top: 1px solid #eee;
+            font-size: 12px;
+            gap: 16px;
+        }
+        .modal-bar .mid { font-weight: 600; color: #222; }
+        .modal-bar .msite { color: #888; flex: 1; }
+        .modal-bar .mclose {
+            background: #fff;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            padding: 4px 14px;
+            cursor: pointer;
+            font-size: 12px;
+            color: #555;
+        }
+        .modal-bar .mclose:hover { background: #f0f0f0; }
+        .modal-no-screen {
+            width: 640px;
+            height: 400px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: #bbb;
+            font-size: 14px;
+            background: #f5f5f5;
+        }
+    </style>
+</head>
+<body>
+    <div class="topbar">
+        <div class="topbar-left">
+            <img src="/scc-logo.svg" alt="St. Clair College">
+            <div class="sep"></div>
+            <h1>Exam Monitor</h1>
+        </div>
+        <div class="topbar-stats">
+            <span><strong id="sOnline">0</strong> students</span>
+            <span><strong id="sViolations">0</strong> violations</span>
+            <span><span class="dot-live"></span>Live</span>
+        </div>
+    </div>
+
+    <div class="main">
+        <div class="grid" id="grid"></div>
+        <div class="empty-state" id="empty">Waiting for students to connect...</div>
+    </div>
+
+    <div class="modal-overlay" id="modal">
+        <div class="modal-box">
+            <div id="modalScreen"></div>
+            <div class="modal-bar">
+                <span class="mid" id="modalId"></span>
+                <span class="msite" id="modalSite"></span>
+                <button class="mclose" onclick="closeModal()">Close</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const students = {};
+        let violationCount = 0;
+        let modalStudentId = null;
+
+        const eventSource = new EventSource('/stream');
+        eventSource.onmessage = function(e) {
+            const msg = JSON.parse(e.data);
+            if (msg.type === 'new_flag') handleFlag(msg.data);
+            else if (msg.type === 'live_screen_update') handleLive(msg.studentId, msg.data);
+        };
+
+        async function loadInitial() {
+            try {
+                const res = await fetch('/live-screens');
+                const screens = await res.json();
+                Object.keys(screens).forEach(id => handleLive(id, screens[id]));
+            } catch(e) {}
+        }
+
+        function handleLive(id, data) {
+            if (!students[id]) {
+                students[id] = { id: id, status: 'safe', violations: 0, site: '', screenshot: null };
+            }
+            students[id].screenshot = data.screenshot;
+            students[id].site = extractDomain(data.currentUrl);
+            render();
+            if (modalStudentId === id) updateModal(id);
+        }
+
+        function handleFlag(data) {
+            const id = data.studentId;
+            if (!students[id]) {
+                students[id] = { id: id, status: 'safe', violations: 0, site: '', screenshot: null };
+            }
+            students[id].status = 'flagged';
+            students[id].violations++;
+            students[id].site = data.domain;
+            if (data.screenshot) students[id].screenshot = data.screenshot;
+            violationCount++;
+            render();
+            if (modalStudentId === id) updateModal(id);
+            setTimeout(() => { if (students[id]) { students[id].status = 'warning'; render(); } }, 8000);
+        }
+
+        function extractDomain(url) {
+            try { return new URL(url).hostname.replace('www.', ''); } catch { return ''; }
+        }
+
+        function openModal(id) {
+            modalStudentId = id;
+            updateModal(id);
+            document.getElementById('modal').classList.add('open');
+        }
+
+        function updateModal(id) {
+            const s = students[id];
+            if (!s) return;
+            document.getElementById('modalId').textContent = s.id;
+            document.getElementById('modalSite').textContent = s.site || 'idle';
+            const container = document.getElementById('modalScreen');
+            if (s.screenshot) {
+                container.innerHTML = '<img src="' + s.screenshot + '">';
+            } else {
+                container.innerHTML = '<div class="modal-no-screen">No screen available</div>';
+            }
+        }
+
+        function closeModal() {
+            modalStudentId = null;
+            document.getElementById('modal').classList.remove('open');
+        }
+
+        document.getElementById('modal').addEventListener('click', function(e) {
+            if (e.target === this) closeModal();
+        });
+        document.addEventListener('keydown', function(e) {
+            if (e.key === 'Escape') closeModal();
+        });
+
+        function render() {
+            const grid = document.getElementById('grid');
+            const empty = document.getElementById('empty');
+            const ids = Object.keys(students);
+
+            document.getElementById('sOnline').textContent = ids.length;
+            document.getElementById('sViolations').textContent = violationCount;
+
+            if (ids.length === 0) { empty.style.display = ''; grid.innerHTML = ''; return; }
+            empty.style.display = 'none';
+
+            grid.innerHTML = ids.map(id => {
+                const s = students[id];
+                const flagged = s.status === 'flagged';
+                return '<div class="tile' + (flagged ? ' flagged' : '') + '" onclick="openModal(\\'' + id + '\\')">'
+                    + '<div class="tile-screen">'
+                    + (s.screenshot ? '<img src="' + s.screenshot + '">' : '<span class="empty">No screen yet</span>')
+                    + '</div>'
+                    + '<div class="tile-info">'
+                    + '<div class="indicator' + (flagged ? ' red' : '') + '"></div>'
+                    + '<div class="tile-text">'
+                    + '<div class="tile-id">' + s.id + '</div>'
+                    + '<div class="tile-meta">' + (s.site || 'idle') + '</div>'
+                    + '</div>'
+                    + (s.violations > 0 ? '<div class="tile-violations">' + s.violations + '</div>' : '')
+                    + '</div></div>';
+            }).join('');
+        }
+
+        loadInitial();
+    </script>
+</body>
+</html>'''
+    return html
+
 @app.route('/')
 def index():
     return '''
@@ -421,9 +813,10 @@ def index():
             <h1>🔒 Exam Monitor Server Running</h1>
             <p>Ready to receive flags from browser extension</p>
             <div class="button-group">
-                <a href="/demo" style="background: #00843D;">🎯 DEMO (Recommended)</a>
-                <a href="/grid" class="grid-link">📹 Grid View</a>
-                <a href="/dashboard">📊 List Dashboard</a>
+                <a href="/monitor" style="background: #111;">Monitor</a>
+                <a href="/demo" style="background: #00843D;">Demo</a>
+                <a href="/grid" class="grid-link">Grid View</a>
+                <a href="/dashboard">List Dashboard</a>
             </div>
         </div>
     </body>
@@ -436,12 +829,13 @@ if __name__ == '__main__':
     debug = os.environ.get('FLASK_ENV') != 'production'
 
     print("=" * 60)
-    print("🚀 ST. CLAIR COLLEGE - EXAM INTEGRITY MONITOR")
+    print("  ST. CLAIR COLLEGE - EXAM INTEGRITY MONITOR")
     print("=" * 60)
-    print(f"🎯 DEMO (Recommended): http://localhost:{port}/demo")
-    print(f"📹 Grid View: http://localhost:{port}/grid")
-    print(f"📊 List Dashboard: http://localhost:{port}/dashboard")
-    print(f"🔌 API Endpoint: http://localhost:{port}/flag")
+    print(f"  Monitor:    http://localhost:{port}/monitor")
+    print(f"  Demo:       http://localhost:{port}/demo")
+    print(f"  Grid View:  http://localhost:{port}/grid")
+    print(f"  Dashboard:  http://localhost:{port}/dashboard")
+    print(f"  API:        http://localhost:{port}/flag")
     print("=" * 60)
-    print("✅ Server is running and waiting for flags...\n")
+    print("  Server is running and waiting for flags...\n")
     app.run(debug=debug, host='0.0.0.0', port=port)

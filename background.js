@@ -13,7 +13,7 @@ const BLOCKED_DOMAINS = [
 ];
 
 // Server endpoint (your backend)
-const SERVER_URL = 'http://localhost:5001/flag';
+const SERVER_URL = 'https://exam-monitor-87ag.onrender.com/flag';
 
 // Student ID (in real deployment, this comes from school login)
 let STUDENT_ID = 'DEMO-12345';

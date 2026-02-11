@@ -283,35 +283,14 @@
 
     <script>
         // Connect to Server-Sent Events for real-time updates
-        const eventSource = new EventSource('http://localhost:5001/stream');
+        const eventSource = new EventSource('/stream');
 
         // Store student data
         const students = {};
         let violationCount = 0;
 
-        // Initialize with demo students
+        // Initialize grid (no fake students — only real connections)
         function initializeDemoStudents() {
-            const demoStudents = [
-                'DEMO-12345',
-                'STU-10001',
-                'STU-10002',
-                'STU-10003',
-                'STU-10004',
-                'STU-10005'
-            ];
-
-            demoStudents.forEach(id => {
-                students[id] = {
-                    id: id,
-                    status: 'safe',
-                    lastActivity: 'Taking exam...',
-                    violations: 0,
-                    currentSite: 'Exam Portal',
-                    screenshot: null,
-                    lastUpdate: new Date()
-                };
-            });
-
             updateGrid();
         }
 
@@ -331,7 +310,7 @@
         // Load initial live screens
         async function loadLiveScreens() {
             try {
-                const response = await fetch('http://localhost:5001/live-screens');
+                const response = await fetch('/live-screens');
                 const screens = await response.json();
 
                 Object.keys(screens).forEach(studentId => {

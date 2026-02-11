@@ -800,7 +800,7 @@
 
     <script>
         // Connect to production server
-        const eventSource = new EventSource('https://exam-monitor-87ag.onrender.com/stream');
+        const eventSource = new EventSource('/stream');
 
         // Student data storage
         const students = {};
@@ -878,7 +878,7 @@
             };
 
             try {
-                await fetch('https://exam-monitor-87ag.onrender.com/flag', {
+                await fetch('/flag', {
                     method: 'POST',
                     headers: {'Content-Type': 'application/json'},
                     body: JSON.stringify(flagData)
@@ -1061,7 +1061,7 @@
         // Load initial screens
         async function loadLiveScreens() {
             try {
-                const response = await fetch('https://exam-monitor-87ag.onrender.com/live-screens');
+                const response = await fetch('/live-screens');
                 const screens = await response.json();
 
                 Object.keys(screens).forEach(studentId => {
