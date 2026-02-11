@@ -542,13 +542,27 @@ def join_exam():
 
     <script>
         let stream = null;
-        let captureInterval = null;
+        let captureWorker = null;
         let activeStudentId = null;
         let tabAwayCount = 0;
         let lastFlaggedLabel = '';
         const canvas = document.createElement('canvas');
         const ctx = canvas.getContext('2d');
         const video = document.createElement('video');
+
+        // Web Worker that keeps ticking even when tab is in background
+        function startWorkerTimer(studentId) {
+            if (captureWorker) captureWorker.terminate();
+            const blob = new Blob([
+                'setInterval(function(){ postMessage("tick"); }, 1000);'
+            ], { type: 'application/javascript' });
+            captureWorker = new Worker(URL.createObjectURL(blob));
+            captureWorker.onmessage = function() {
+                captureAndSend(studentId);
+            };
+            // Fire immediately too
+            captureAndSend(studentId);
+        }
 
         // AI sites — matched against the shared tab/window title
         const AI_KEYWORDS = [
@@ -596,10 +610,9 @@ def join_exam():
                     });
                     usingCamera = true;
                 } else {
-                    // Desktop: prefer tab sharing so we get the tab title for AI detection
+                    // Desktop: prefer entire screen so professor sees everything
                     stream = await navigator.mediaDevices.getDisplayMedia({
-                        video: { cursor: 'always', displaySurface: 'browser' },
-                        preferCurrentTab: false,
+                        video: { cursor: 'always', displaySurface: 'monitor' },
                         audio: false
                     });
                     usingCamera = false;
@@ -624,9 +637,9 @@ def join_exam():
                 // Handle user stopping share via browser UI
                 stream.getVideoTracks()[0].onended = () => stopSharing();
 
-                // Capture and send every 1 second for near-real-time streaming
-                captureAndSend(studentId);
-                captureInterval = setInterval(() => captureAndSend(studentId), 1000);
+                // Use Web Worker timer so captures continue when this tab is in background
+                // (browsers throttle setInterval to ~1/min for background tabs)
+                startWorkerTimer(studentId);
 
             } catch (err) {
                 document.getElementById('status').className = 'status error';
@@ -683,8 +696,11 @@ def join_exam():
             }
         }
 
+        let sendingInProgress = false;
         async function captureAndSend(studentId) {
             if (!stream || !stream.active) return;
+            if (sendingInProgress) return; // skip if previous send still in-flight
+            sendingInProgress = true;
 
             const track = stream.getVideoTracks()[0];
             const label = track.label || '';
@@ -734,11 +750,13 @@ def join_exam():
                 });
             } catch (e) {
                 console.error('Failed to send update:', e);
+            } finally {
+                sendingInProgress = false;
             }
         }
 
         function stopSharing() {
-            if (captureInterval) clearInterval(captureInterval);
+            if (captureWorker) { captureWorker.terminate(); captureWorker = null; }
             if (stream) stream.getTracks().forEach(t => t.stop());
             stream = null;
             activeStudentId = null;
