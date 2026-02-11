@@ -76,6 +76,11 @@ def get_live_screens():
     """Get current live screens for all students"""
     return jsonify(live_screens)
 
+@app.route('/flags')
+def get_flags():
+    """Return all recorded flags for the violation log"""
+    return jsonify(list(reversed(flags)))
+
 @app.route('/stream')
 def stream():
     """Server-Sent Events endpoint for real-time updates (supports multiple viewers)"""
@@ -738,23 +743,25 @@ def monitor():
             gap: 12px;
             overflow: hidden;
         }
-        .topbar-left img {
-            height: 24px;
-            width: auto;
-            flex-shrink: 0;
+        .topbar-left img { height: 24px; width: auto; flex-shrink: 0; }
+        .topbar-left .sep { width: 1px; height: 20px; background: #ddd; flex-shrink: 0; }
+        .topbar h1 { font-size: 14px; font-weight: 600; color: #222; white-space: nowrap; }
+        .topbar-nav {
+            display: flex;
+            gap: 4px;
+            margin-left: 16px;
         }
-        .topbar-left .sep {
-            width: 1px;
-            height: 20px;
-            background: #ddd;
-            flex-shrink: 0;
+        .topbar-nav button {
+            padding: 5px 14px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            background: #fff;
+            font-size: 12px;
+            cursor: pointer;
+            color: #555;
         }
-        .topbar h1 {
-            font-size: 14px;
-            font-weight: 600;
-            color: #222;
-            white-space: nowrap;
-        }
+        .topbar-nav button:hover { background: #f0f0f0; }
+        .topbar-nav button.active { background: #222; color: #fff; border-color: #222; }
         .topbar-stats {
             display: flex;
             gap: 20px;
@@ -772,13 +779,13 @@ def monitor():
             vertical-align: middle;
             animation: livepulse 2s infinite;
         }
-        @keyframes livepulse {
-            0%, 100% { opacity: 1; }
-            50% { opacity: 0.4; }
-        }
+        @keyframes livepulse { 0%,100%{opacity:1;} 50%{opacity:0.4;} }
 
         .main { padding: 16px 20px; }
+        .panel { display: none; }
+        .panel.active { display: block; }
 
+        /* Grid */
         .grid {
             display: grid;
             grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
@@ -792,14 +799,8 @@ def monitor():
             cursor: pointer;
             transition: box-shadow 0.15s, border-color 0.15s;
         }
-        .tile:hover {
-            box-shadow: 0 2px 8px rgba(0,0,0,0.08);
-            border-color: #bbb;
-        }
-        .tile.flagged {
-            border-color: #d63031;
-            border-width: 2px;
-        }
+        .tile:hover { box-shadow: 0 2px 8px rgba(0,0,0,0.08); border-color: #bbb; }
+        .tile.flagged { border-color: #d63031; border-width: 2px; }
         .tile-screen {
             width: 100%;
             aspect-ratio: 16/10;
@@ -809,15 +810,8 @@ def monitor():
             justify-content: center;
             overflow: hidden;
         }
-        .tile-screen img {
-            width: 100%;
-            height: 100%;
-            object-fit: cover;
-        }
-        .tile-screen .empty {
-            color: #bbb;
-            font-size: 12px;
-        }
+        .tile-screen img { width: 100%; height: 100%; object-fit: cover; }
+        .tile-screen .empty { color: #bbb; font-size: 12px; }
         .tile-info {
             padding: 8px 10px;
             display: flex;
@@ -825,45 +819,65 @@ def monitor():
             gap: 8px;
             border-top: 1px solid #f0f0f0;
         }
-        .indicator {
-            width: 8px; height: 8px;
-            border-radius: 50%;
-            flex-shrink: 0;
-            background: #b2bec3;
-        }
+        .indicator { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; background: #b2bec3; }
         .indicator.red { background: #d63031; }
         .tile-text { flex: 1; min-width: 0; }
-        .tile-id {
-            font-weight: 600;
+        .tile-id { font-weight: 600; font-size: 12px; color: #222; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .tile-meta { font-size: 11px; color: #888; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 1px; }
+        .tile-violations { font-size: 11px; color: #d63031; font-weight: 700; flex-shrink: 0; background: #ffeaea; padding: 2px 7px; border-radius: 8px; }
+        .empty-state { text-align: center; padding: 80px 20px; color: #999; font-size: 14px; }
+
+        /* Violation Log */
+        .log-table {
+            width: 100%;
+            border-collapse: collapse;
             font-size: 12px;
-            color: #222;
-            white-space: nowrap;
-            overflow: hidden;
-            text-overflow: ellipsis;
         }
-        .tile-meta {
+        .log-table th {
+            text-align: left;
+            padding: 8px 12px;
+            background: #fff;
+            border-bottom: 2px solid #e0e0e0;
+            font-weight: 600;
+            color: #555;
             font-size: 11px;
-            color: #888;
-            white-space: nowrap;
-            overflow: hidden;
-            text-overflow: ellipsis;
-            margin-top: 1px;
+            text-transform: uppercase;
+            letter-spacing: 0.3px;
+            position: sticky;
+            top: 48px;
+            z-index: 10;
         }
-        .tile-violations {
-            font-size: 11px;
-            color: #d63031;
-            font-weight: 700;
-            flex-shrink: 0;
-            background: #ffeaea;
-            padding: 2px 7px;
-            border-radius: 8px;
+        .log-table td {
+            padding: 10px 12px;
+            border-bottom: 1px solid #f0f0f0;
+            vertical-align: top;
         }
-        .empty-state {
-            text-align: center;
-            padding: 80px 20px;
-            color: #999;
-            font-size: 14px;
+        .log-table tr:hover td { background: #fafafa; }
+        .log-time { white-space: nowrap; color: #888; font-size: 11px; }
+        .log-student { font-weight: 600; color: #222; }
+        .log-type {
+            display: inline-block;
+            padding: 2px 8px;
+            border-radius: 3px;
+            font-size: 10px;
+            font-weight: 600;
+            text-transform: uppercase;
         }
+        .log-type.ai { background: #d63031; color: #fff; }
+        .log-type.tab { background: #e17055; color: #fff; }
+        .log-type.focus { background: #fdcb6e; color: #222; }
+        .log-type.access { background: #d63031; color: #fff; }
+        .log-detail { color: #666; font-size: 11px; max-width: 300px; word-break: break-word; }
+        .log-thumb {
+            width: 120px;
+            height: 75px;
+            object-fit: cover;
+            border-radius: 3px;
+            border: 1px solid #e0e0e0;
+            cursor: pointer;
+        }
+        .log-thumb:hover { border-color: #888; }
+        .log-empty { text-align: center; padding: 60px 20px; color: #aaa; }
 
         /* Modal */
         .modal-overlay {
@@ -915,14 +929,9 @@ def monitor():
         }
         .modal-bar .mclose:hover { background: #f0f0f0; }
         .modal-no-screen {
-            width: 640px;
-            height: 400px;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            color: #bbb;
-            font-size: 14px;
-            background: #f5f5f5;
+            width: 640px; height: 400px;
+            display: flex; align-items: center; justify-content: center;
+            color: #bbb; font-size: 14px; background: #f5f5f5;
         }
     </style>
 </head>
@@ -932,6 +941,10 @@ def monitor():
             <img src="/scc-logo.svg" alt="St. Clair College">
             <div class="sep"></div>
             <h1>Exam Monitor</h1>
+            <div class="topbar-nav">
+                <button class="active" id="navScreens" onclick="showPanel('screens')">Live Screens</button>
+                <button id="navLog" onclick="showPanel('log')">Violation Log<span id="logBadge"></span></button>
+            </div>
         </div>
         <div class="topbar-stats">
             <span><strong id="sOnline">0</strong> students</span>
@@ -941,8 +954,28 @@ def monitor():
     </div>
 
     <div class="main">
-        <div class="grid" id="grid"></div>
-        <div class="empty-state" id="empty">Waiting for students to connect...</div>
+        <!-- Live Screens Panel -->
+        <div class="panel active" id="panelScreens">
+            <div class="grid" id="grid"></div>
+            <div class="empty-state" id="empty">Waiting for students to connect...</div>
+        </div>
+
+        <!-- Violation Log Panel -->
+        <div class="panel" id="panelLog">
+            <table class="log-table">
+                <thead>
+                    <tr>
+                        <th>Time</th>
+                        <th>Student</th>
+                        <th>Type</th>
+                        <th>Details</th>
+                        <th>Evidence</th>
+                    </tr>
+                </thead>
+                <tbody id="logBody"></tbody>
+            </table>
+            <div class="log-empty" id="logEmpty">No violations recorded yet.</div>
+        </div>
     </div>
 
     <div class="modal-overlay" id="modal">
@@ -958,9 +991,19 @@ def monitor():
 
     <script>
         const students = {};
+        const violationLog = [];
         let violationCount = 0;
         let modalStudentId = null;
 
+        // Tab navigation
+        function showPanel(name) {
+            document.getElementById('panelScreens').classList.toggle('active', name === 'screens');
+            document.getElementById('panelLog').classList.toggle('active', name === 'log');
+            document.getElementById('navScreens').classList.toggle('active', name === 'screens');
+            document.getElementById('navLog').classList.toggle('active', name === 'log');
+        }
+
+        // SSE
         const eventSource = new EventSource('/stream');
         eventSource.onmessage = function(e) {
             const msg = JSON.parse(e.data);
@@ -974,6 +1017,13 @@ def monitor():
                 const screens = await res.json();
                 Object.keys(screens).forEach(id => handleLive(id, screens[id]));
             } catch(e) {}
+            // Load existing flags into the log
+            try {
+                const res = await fetch('/flags');
+                const flags = await res.json();
+                flags.reverse().forEach(f => addToLog(f, true));
+                renderLog();
+            } catch(e) {}
         }
 
         function handleLive(id, data) {
@@ -981,14 +1031,13 @@ def monitor():
                 students[id] = { id: id, status: 'safe', violations: 0, site: '', screenshot: null };
             }
             students[id].screenshot = data.screenshot;
-            // Use tab title if available (screen share gives us this), otherwise extract domain
             var title = data.currentTitle || '';
             if (title && title !== 'Screen Share' && title !== 'Full Screen') {
                 students[id].site = title;
             } else {
                 students[id].site = extractDomain(data.currentUrl);
             }
-            render();
+            renderGrid();
             if (modalStudentId === id) updateModal(id);
         }
 
@@ -1002,53 +1051,98 @@ def monitor():
             students[id].site = data.domain;
             if (data.screenshot) students[id].screenshot = data.screenshot;
             violationCount++;
-            render();
+
+            addToLog(data, false);
+            renderGrid();
+            renderLog();
             if (modalStudentId === id) updateModal(id);
-            setTimeout(() => { if (students[id]) { students[id].status = 'warning'; render(); } }, 8000);
+            setTimeout(() => { if (students[id]) { students[id].status = 'warning'; renderGrid(); } }, 8000);
+        }
+
+        function addToLog(flag, silent) {
+            violationLog.unshift({
+                time: flag.received_at || flag.timestamp || new Date().toISOString(),
+                studentId: flag.studentId,
+                type: flag.flagType || 'ACCESS',
+                domain: flag.domain || '',
+                detail: flag.fullUrl || '',
+                screenshot: flag.screenshot || null
+            });
+            if (!silent) {
+                violationCount = violationLog.length;
+            }
+        }
+
+        function typeLabel(t) {
+            const lower = (t || '').toUpperCase();
+            if (lower.includes('AI')) return 'ai';
+            if (lower.includes('TAB')) return 'tab';
+            if (lower.includes('FOCUS')) return 'focus';
+            return 'access';
+        }
+
+        function typeName(t) {
+            const lower = (t || '').toUpperCase();
+            if (lower.includes('AI')) return 'AI Detected';
+            if (lower.includes('TAB')) return 'Tab Switch';
+            if (lower.includes('FOCUS')) return 'Focus Lost';
+            if (lower.includes('PASTE')) return 'Paste';
+            if (lower.includes('COPY')) return 'Copy';
+            if (lower.includes('TYPING')) return 'Typing';
+            return 'Site Access';
+        }
+
+        function fmtTime(t) {
+            try {
+                if (t.includes('T') || t.includes('Z')) {
+                    const d = new Date(t);
+                    return d.toLocaleDateString('en-US', {month:'short',day:'numeric',year:'numeric'})
+                        + ' ' + d.toLocaleTimeString('en-US', {hour:'2-digit',minute:'2-digit',second:'2-digit'});
+                }
+                return t;
+            } catch { return t; }
         }
 
         function extractDomain(url) {
             try { return new URL(url).hostname.replace('www.', ''); } catch { return ''; }
         }
 
+        // Modal
         function openModal(id) {
             modalStudentId = id;
             updateModal(id);
             document.getElementById('modal').classList.add('open');
         }
-
+        function openScreenshot(src, label) {
+            modalStudentId = null;
+            document.getElementById('modalId').textContent = label || 'Evidence';
+            document.getElementById('modalSite').textContent = '';
+            document.getElementById('modalScreen').innerHTML = '<img src="' + src + '">';
+            document.getElementById('modal').classList.add('open');
+        }
         function updateModal(id) {
             const s = students[id];
             if (!s) return;
             document.getElementById('modalId').textContent = s.id;
             document.getElementById('modalSite').textContent = s.site || 'idle';
-            const container = document.getElementById('modalScreen');
-            if (s.screenshot) {
-                container.innerHTML = '<img src="' + s.screenshot + '">';
-            } else {
-                container.innerHTML = '<div class="modal-no-screen">No screen available</div>';
-            }
+            const c = document.getElementById('modalScreen');
+            c.innerHTML = s.screenshot ? '<img src="' + s.screenshot + '">' : '<div class="modal-no-screen">No screen available</div>';
         }
-
         function closeModal() {
             modalStudentId = null;
             document.getElementById('modal').classList.remove('open');
         }
+        document.getElementById('modal').addEventListener('click', function(e) { if (e.target === this) closeModal(); });
+        document.addEventListener('keydown', function(e) { if (e.key === 'Escape') closeModal(); });
 
-        document.getElementById('modal').addEventListener('click', function(e) {
-            if (e.target === this) closeModal();
-        });
-        document.addEventListener('keydown', function(e) {
-            if (e.key === 'Escape') closeModal();
-        });
-
-        function render() {
+        // Render
+        function renderGrid() {
             const grid = document.getElementById('grid');
             const empty = document.getElementById('empty');
             const ids = Object.keys(students);
 
             document.getElementById('sOnline').textContent = ids.length;
-            document.getElementById('sViolations').textContent = violationCount;
+            document.getElementById('sViolations').textContent = violationLog.length;
 
             if (ids.length === 0) { empty.style.display = ''; grid.innerHTML = ''; return; }
             empty.style.display = 'none';
@@ -1069,6 +1163,28 @@ def monitor():
                     + (s.violations > 0 ? '<div class="tile-violations">' + s.violations + '</div>' : '')
                     + '</div></div>';
             }).join('');
+        }
+
+        function renderLog() {
+            const body = document.getElementById('logBody');
+            const empty = document.getElementById('logEmpty');
+
+            if (violationLog.length === 0) { body.innerHTML = ''; empty.style.display = ''; return; }
+            empty.style.display = 'none';
+
+            body.innerHTML = violationLog.map((v, i) => {
+                const cls = typeLabel(v.type);
+                return '<tr>'
+                    + '<td class="log-time">' + fmtTime(v.time) + '</td>'
+                    + '<td class="log-student">' + v.studentId + '</td>'
+                    + '<td><span class="log-type ' + cls + '">' + typeName(v.type) + '</span></td>'
+                    + '<td class="log-detail">' + (v.domain || '') + (v.detail ? '<br>' + v.detail : '') + '</td>'
+                    + '<td>' + (v.screenshot ? '<img class="log-thumb" src="' + v.screenshot + '" onclick="openScreenshot(this.src, \\'' + v.studentId + ' — ' + fmtTime(v.time).replace(/'/g,'') + '\\')">' : '<span style="color:#ccc">—</span>') + '</td>'
+                    + '</tr>';
+            }).join('');
+
+            // Update badge
+            document.getElementById('logBadge').textContent = violationLog.length > 0 ? ' (' + violationLog.length + ')' : '';
         }
 
         loadInitial();
