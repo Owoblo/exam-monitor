@@ -20,6 +20,10 @@ live_screens = {}  # {studentId: {screenshot, url, timestamp}}
 sse_clients = []
 sse_clients_lock = threading.Lock()
 
+# WebRTC signaling store
+webrtc_offers = {}   # {studentId: complete offer SDP}
+webrtc_answers = {}  # {studentId: complete answer SDP}
+
 def broadcast(message):
     """Send an event to every connected SSE client."""
     with sse_clients_lock:
@@ -80,6 +84,47 @@ def get_live_screens():
 def get_flags():
     """Return all recorded flags for the violation log"""
     return jsonify(list(reversed(flags)))
+
+# --- WebRTC Signaling ---
+
+@app.route('/signal/offer', methods=['POST'])
+def signal_offer():
+    """Student posts their complete offer SDP (with ICE candidates baked in)"""
+    data = request.json
+    student_id = data['studentId']
+    webrtc_offers[student_id] = data['offer']
+    # Clear any stale answer from a previous session
+    webrtc_answers.pop(student_id, None)
+    # Notify all monitors so they can connect
+    broadcast({
+        'type': 'webrtc_offer',
+        'studentId': student_id,
+        'offer': data['offer']
+    })
+    return jsonify({'status': 'ok'})
+
+@app.route('/signal/answer', methods=['POST'])
+def signal_answer():
+    """Professor posts their complete answer SDP"""
+    data = request.json
+    student_id = data['studentId']
+    webrtc_answers[student_id] = data['answer']
+    return jsonify({'status': 'ok'})
+
+@app.route('/signal/answer/<student_id>')
+def get_answer(student_id):
+    """Student polls for the professor's answer"""
+    answer = webrtc_answers.get(student_id)
+    if answer:
+        return jsonify({'answer': answer})
+    return jsonify({'answer': None})
+
+@app.route('/signal/offers')
+def get_offers():
+    """Professor gets all pending offers (for when monitor loads after students join)"""
+    return jsonify(webrtc_offers)
+
+# --- End WebRTC Signaling ---
 
 @app.route('/stream')
 def stream():
@@ -532,7 +577,8 @@ def join_exam():
         </div>
 
         <div id="activeView" style="display:none;">
-            <div class="status active"><span class="dot"></span>Screen is being shared</div>
+            <div class="status active"><span class="dot"></span><span id="shareMode">Screen is being shared</span></div>
+            <div id="rtcStatus" style="font-size:11px;color:#aaa;margin-top:4px;">Connecting live stream...</div>
             <div class="preview" id="preview"><img id="previewImg"></div>
             <div id="captureStats" style="font-size:11px;color:#aaa;margin-top:8px;">Captures: 0 | Flags: 0</div>
             <button class="stop-btn" onclick="stopSharing()">Stop Sharing</button>
@@ -549,13 +595,97 @@ def join_exam():
         let lastFlaggedLabel = '';
         let captureCount = 0;
         let flagCount = 0;
+        let peerConnection = null;
+        let answerPollInterval = null;
         const canvas = document.createElement('canvas');
         const ctx = canvas.getContext('2d');
         const video = document.createElement('video');
 
+        const RTC_CONFIG = {
+            iceServers: [
+                { urls: 'stun:stun.l.google.com:19302' },
+                { urls: 'stun:stun1.l.google.com:19302' }
+            ]
+        };
+
         function updateStats() {
             const el = document.getElementById('captureStats');
             if (el) el.textContent = 'Captures: ' + captureCount + ' | Flags: ' + flagCount;
+        }
+
+        async function setupWebRTC(studentId, mediaStream) {
+            const rtcEl = document.getElementById('rtcStatus');
+            try {
+                peerConnection = new RTCPeerConnection(RTC_CONFIG);
+
+                // Add video track to peer connection
+                mediaStream.getVideoTracks().forEach(track => {
+                    peerConnection.addTrack(track, mediaStream);
+                });
+
+                // Create offer
+                const offer = await peerConnection.createOffer();
+                await peerConnection.setLocalDescription(offer);
+
+                // Wait for ICE gathering to complete (bakes candidates into SDP)
+                await new Promise((resolve) => {
+                    if (peerConnection.iceGatheringState === 'complete') {
+                        resolve();
+                    } else {
+                        peerConnection.addEventListener('icegatheringstatechange', () => {
+                            if (peerConnection.iceGatheringState === 'complete') resolve();
+                        });
+                        // Fallback timeout — don't wait forever
+                        setTimeout(resolve, 5000);
+                    }
+                });
+
+                // Send complete offer (with ICE candidates) to signaling server
+                await fetch('/signal/offer', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        studentId: studentId,
+                        offer: peerConnection.localDescription
+                    })
+                });
+
+                rtcEl.textContent = 'Waiting for professor to connect...';
+
+                // Poll for answer from professor
+                answerPollInterval = setInterval(async () => {
+                    try {
+                        const res = await fetch('/signal/answer/' + encodeURIComponent(studentId));
+                        const data = await res.json();
+                        if (data.answer) {
+                            clearInterval(answerPollInterval);
+                            answerPollInterval = null;
+                            await peerConnection.setRemoteDescription(new RTCSessionDescription(data.answer));
+                            rtcEl.textContent = 'Live stream connected';
+                            rtcEl.style.color = '#00843D';
+                        }
+                    } catch (e) {
+                        console.error('Answer poll error:', e);
+                    }
+                }, 1500);
+
+                // Monitor connection state
+                peerConnection.addEventListener('connectionstatechange', () => {
+                    const state = peerConnection.connectionState;
+                    if (state === 'connected') {
+                        rtcEl.textContent = 'Live stream connected';
+                        rtcEl.style.color = '#00843D';
+                    } else if (state === 'disconnected' || state === 'failed') {
+                        rtcEl.textContent = 'Live stream disconnected — screenshots still active';
+                        rtcEl.style.color = '#d63031';
+                    }
+                });
+
+            } catch (e) {
+                console.error('WebRTC setup error:', e);
+                rtcEl.textContent = 'Live stream unavailable — using screenshots';
+                rtcEl.style.color = '#e17055';
+            }
         }
 
         // Web Worker that keeps ticking even when tab is in background
@@ -646,8 +776,10 @@ def join_exam():
                 stream.getVideoTracks()[0].onended = () => stopSharing();
 
                 // Use Web Worker timer so captures continue when this tab is in background
-                // (browsers throttle setInterval to ~1/min for background tabs)
                 startWorkerTimer(studentId);
+
+                // Set up WebRTC for real-time video streaming to professor
+                setupWebRTC(studentId, stream);
 
             } catch (err) {
                 document.getElementById('status').className = 'status error';
@@ -810,6 +942,8 @@ def join_exam():
 
         function stopSharing() {
             if (captureWorker) { captureWorker.terminate(); captureWorker = null; }
+            if (answerPollInterval) { clearInterval(answerPollInterval); answerPollInterval = null; }
+            if (peerConnection) { peerConnection.close(); peerConnection = null; }
             if (stream) stream.getTracks().forEach(t => t.stop());
             stream = null;
             activeStudentId = null;
@@ -940,9 +1074,18 @@ def monitor():
             align-items: center;
             justify-content: center;
             overflow: hidden;
+            position: relative;
         }
-        .tile-screen img { width: 100%; height: 100%; object-fit: cover; transition: opacity 0.15s; }
+        .tile-screen img, .tile-screen video { width: 100%; height: 100%; object-fit: cover; transition: opacity 0.15s; }
+        .tile-screen video { background: #111; }
         .tile-screen .empty { color: #bbb; font-size: 12px; }
+        .rtc-badge {
+            position: absolute; top: 6px; right: 6px;
+            font-size: 9px; font-weight: 700; padding: 2px 6px;
+            border-radius: 3px; text-transform: uppercase; letter-spacing: 0.5px;
+        }
+        .rtc-badge.live { background: #d63031; color: #fff; }
+        .rtc-badge.screenshots { background: rgba(0,0,0,0.5); color: #fff; }
         .tile-info {
             padding: 8px 10px;
             display: flex;
@@ -1031,12 +1174,13 @@ def monitor():
             display: flex;
             flex-direction: column;
         }
-        .modal-box img {
+        .modal-box img, .modal-box video {
             display: block;
             max-width: 90vw;
             max-height: calc(90vh - 48px);
             object-fit: contain;
         }
+        .modal-box video { background: #111; }
         .modal-bar {
             display: flex;
             align-items: center;
@@ -1155,6 +1299,15 @@ def monitor():
         const violationLog = [];
         let violationCount = 0;
         let modalStudentId = null;
+        const peerConnections = {}; // {studentId: RTCPeerConnection}
+        const remoteStreams = {};   // {studentId: MediaStream}
+
+        const RTC_CONFIG = {
+            iceServers: [
+                { urls: 'stun:stun.l.google.com:19302' },
+                { urls: 'stun:stun1.l.google.com:19302' }
+            ]
+        };
 
         // Tab navigation
         function showPanel(name) {
@@ -1164,12 +1317,78 @@ def monitor():
             document.getElementById('navLog').classList.toggle('active', name === 'log');
         }
 
+        // --- WebRTC: connect to a student's stream ---
+        async function connectToStudent(studentId, offer) {
+            // Close any existing connection for this student
+            if (peerConnections[studentId]) {
+                peerConnections[studentId].close();
+            }
+
+            const pc = new RTCPeerConnection(RTC_CONFIG);
+            peerConnections[studentId] = pc;
+
+            // When we receive the video track from the student
+            pc.ontrack = function(event) {
+                remoteStreams[studentId] = event.streams[0];
+                // Update the tile to show live video
+                if (students[studentId]) {
+                    students[studentId].rtcConnected = true;
+                }
+                renderGrid();
+                if (modalStudentId === studentId) updateModal(studentId);
+            };
+
+            pc.onconnectionstatechange = function() {
+                if (pc.connectionState === 'disconnected' || pc.connectionState === 'failed') {
+                    if (students[studentId]) students[studentId].rtcConnected = false;
+                    renderGrid();
+                }
+            };
+
+            try {
+                // Set the student's offer
+                await pc.setRemoteDescription(new RTCSessionDescription(offer));
+
+                // Create answer
+                const answer = await pc.createAnswer();
+                await pc.setLocalDescription(answer);
+
+                // Wait for ICE gathering
+                await new Promise((resolve) => {
+                    if (pc.iceGatheringState === 'complete') {
+                        resolve();
+                    } else {
+                        pc.addEventListener('icegatheringstatechange', () => {
+                            if (pc.iceGatheringState === 'complete') resolve();
+                        });
+                        setTimeout(resolve, 5000);
+                    }
+                });
+
+                // Send complete answer to signaling server
+                await fetch('/signal/answer', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        studentId: studentId,
+                        answer: pc.localDescription
+                    })
+                });
+            } catch (e) {
+                console.error('WebRTC connect error for', studentId, e);
+            }
+        }
+
         // SSE
         const eventSource = new EventSource('/stream');
         eventSource.onmessage = function(e) {
             const msg = JSON.parse(e.data);
             if (msg.type === 'new_flag') handleFlag(msg.data);
             else if (msg.type === 'live_screen_update') handleLive(msg.studentId, msg.data);
+            else if (msg.type === 'webrtc_offer') {
+                // New student wants to stream — connect!
+                connectToStudent(msg.studentId, msg.offer);
+            }
         };
 
         async function loadInitial() {
@@ -1184,6 +1403,14 @@ def monitor():
                 const flags = await res.json();
                 flags.reverse().forEach(f => addToLog(f, true));
                 renderLog();
+            } catch(e) {}
+            // Connect to any existing WebRTC offers (student joined before professor)
+            try {
+                const res = await fetch('/signal/offers');
+                const offers = await res.json();
+                Object.keys(offers).forEach(id => {
+                    if (!peerConnections[id]) connectToStudent(id, offers[id]);
+                });
             } catch(e) {}
         }
 
@@ -1287,7 +1514,21 @@ def monitor():
             document.getElementById('modalId').textContent = s.id;
             document.getElementById('modalSite').textContent = s.site || 'idle';
             const c = document.getElementById('modalScreen');
-            c.innerHTML = s.screenshot ? '<img src="' + s.screenshot + '">' : '<div class="modal-no-screen">No screen available</div>';
+            // Prefer live WebRTC video in modal
+            if (s.rtcConnected && remoteStreams[id]) {
+                if (!c.querySelector('video') || c.querySelector('video').dataset.sid !== id) {
+                    const v = document.createElement('video');
+                    v.autoplay = true;
+                    v.playsinline = true;
+                    v.muted = true;
+                    v.dataset.sid = id;
+                    v.srcObject = remoteStreams[id];
+                    c.innerHTML = '';
+                    c.appendChild(v);
+                }
+            } else {
+                c.innerHTML = s.screenshot ? '<img src="' + s.screenshot + '">' : '<div class="modal-no-screen">No screen available</div>';
+            }
         }
         function closeModal() {
             modalStudentId = null;
@@ -1320,8 +1561,10 @@ def monitor():
                     tile.onclick = function() { openModal(id); };
                     tile.innerHTML =
                         '<div class="tile-screen">'
+                        + '<video autoplay playsinline muted style="display:none"></video>'
                         + '<img style="display:none">'
                         + '<span class="empty">No screen yet</span>'
+                        + '<span class="rtc-badge screenshots" style="display:none"></span>'
                         + '</div>'
                         + '<div class="tile-info">'
                         + '<div class="indicator"></div>'
@@ -1335,15 +1578,35 @@ def monitor():
                 }
 
                 tile.className = 'tile' + (flagged ? ' flagged' : '');
+                const vid = tile.querySelector('.tile-screen video');
                 const img = tile.querySelector('.tile-screen img');
                 const emptyLabel = tile.querySelector('.tile-screen .empty');
-                if (s.screenshot) {
+                const badge = tile.querySelector('.rtc-badge');
+
+                // Prefer WebRTC live video over screenshots
+                if (s.rtcConnected && remoteStreams[id]) {
+                    if (vid.srcObject !== remoteStreams[id]) {
+                        vid.srcObject = remoteStreams[id];
+                    }
+                    vid.style.display = '';
+                    img.style.display = 'none';
+                    if (emptyLabel) emptyLabel.style.display = 'none';
+                    badge.className = 'rtc-badge live';
+                    badge.textContent = 'LIVE';
+                    badge.style.display = '';
+                } else if (s.screenshot) {
                     img.src = s.screenshot;
                     img.style.display = '';
+                    vid.style.display = 'none';
                     if (emptyLabel) emptyLabel.style.display = 'none';
+                    badge.className = 'rtc-badge screenshots';
+                    badge.textContent = 'IMG';
+                    badge.style.display = '';
                 } else {
+                    vid.style.display = 'none';
                     img.style.display = 'none';
                     if (emptyLabel) emptyLabel.style.display = '';
+                    badge.style.display = 'none';
                 }
                 tile.querySelector('.indicator').className = 'indicator' + (flagged ? ' red' : '');
                 tile.querySelector('.tile-id').textContent = s.id;
