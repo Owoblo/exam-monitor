@@ -524,15 +524,27 @@ def join_exam():
         let captureInterval = null;
         let activeStudentId = null;
         let tabAwayCount = 0;
+        let lastFlaggedLabel = '';
         const canvas = document.createElement('canvas');
         const ctx = canvas.getContext('2d');
         const video = document.createElement('video');
 
-        // AI sites to look for in the title bar of captured screenshots
-        // (we can't get URL from getDisplayMedia, but we CAN read the
-        //  page title from the shared tab's document.title via the
-        //  browser tab bar visible in the screenshot — however the
-        //  reliable method is tab visibility detection below)
+        // AI sites — matched against the shared tab/window title
+        const AI_KEYWORDS = [
+            'chatgpt', 'openai', 'claude', 'anthropic', 'gemini',
+            'copilot', 'perplexity', 'bard', 'poe.com', 'character.ai',
+            'you.com', 'phind', 'huggingface', 'hugging face', 'writesonic',
+            'jasper', 'quillbot', 'grammarly'
+        ];
+
+        function detectAI(label) {
+            if (!label) return null;
+            const lower = label.toLowerCase();
+            for (const kw of AI_KEYWORDS) {
+                if (lower.includes(kw)) return kw;
+            }
+            return null;
+        }
 
         async function startSharing() {
             const idInput = document.getElementById('studentId');
@@ -562,9 +574,9 @@ def join_exam():
                 // Handle user stopping share via browser UI
                 stream.getVideoTracks()[0].onended = () => stopSharing();
 
-                // Capture and send every 4 seconds
+                // Capture and send every 3 seconds
                 captureAndSend(studentId);
-                captureInterval = setInterval(() => captureAndSend(studentId), 4000);
+                captureInterval = setInterval(() => captureAndSend(studentId), 3000);
 
             } catch (err) {
                 document.getElementById('status').className = 'status error';
@@ -573,26 +585,22 @@ def join_exam():
             }
         }
 
-        // Detect when student leaves this tab (switches to another app/tab)
+        // Detect when student leaves this tab
         document.addEventListener('visibilitychange', function() {
             if (!activeStudentId || !stream) return;
-
             if (document.hidden) {
                 tabAwayCount++;
-                // Student left the exam tab — capture what they see and flag it
                 sendFlag(activeStudentId, 'TAB_SWITCH', 'Student left exam tab (switch #' + tabAwayCount + ')');
             }
         });
 
-        // Also detect window blur (catches Alt-Tab, clicking other windows)
         window.addEventListener('blur', function() {
             if (!activeStudentId || !stream) return;
             tabAwayCount++;
             sendFlag(activeStudentId, 'FOCUS_LOST', 'Student switched away from exam (switch #' + tabAwayCount + ')');
         });
 
-        async function sendFlag(studentId, flagType, detail) {
-            // Capture current screenshot for evidence
+        async function sendFlag(studentId, flagType, detail, domain) {
             let screenshot = null;
             if (stream && stream.active) {
                 canvas.width = video.videoWidth;
@@ -607,7 +615,7 @@ def join_exam():
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
                         studentId: studentId,
-                        domain: flagType,
+                        domain: domain || flagType,
                         fullUrl: detail,
                         flagType: flagType,
                         timestamp: new Date().toISOString(),
@@ -622,14 +630,33 @@ def join_exam():
         async function captureAndSend(studentId) {
             if (!stream || !stream.active) return;
 
+            // Read the shared surface label — Chrome puts the tab/window title here
+            const track = stream.getVideoTracks()[0];
+            const label = track.label || '';
+            const settings = track.getSettings ? track.getSettings() : {};
+            const surfaceType = settings.displaySurface || 'unknown';
+
+            // Check for AI sites in the label
+            const aiMatch = detectAI(label);
+            if (aiMatch && label !== lastFlaggedLabel) {
+                lastFlaggedLabel = label;
+                sendFlag(studentId, 'AI_DETECTED',
+                    'AI tool detected: ' + label + ' (surface: ' + surfaceType + ')',
+                    aiMatch);
+            }
+
             canvas.width = video.videoWidth;
             canvas.height = video.videoHeight;
             ctx.drawImage(video, 0, 0);
 
             const screenshot = canvas.toDataURL('image/jpeg', 0.5);
-
-            // Show preview
             document.getElementById('previewImg').src = screenshot;
+
+            // Build a meaningful title from what we know
+            let currentTitle = label || 'Screen Share';
+            if (surfaceType === 'browser') currentTitle = label || 'Browser Tab';
+            else if (surfaceType === 'window') currentTitle = label || 'Window';
+            else if (surfaceType === 'monitor') currentTitle = 'Full Screen';
 
             try {
                 await fetch('/live-update', {
@@ -638,8 +665,8 @@ def join_exam():
                     body: JSON.stringify({
                         studentId: studentId,
                         screenshot: screenshot,
-                        currentUrl: 'screen-share://browser',
-                        currentTitle: 'Screen Share',
+                        currentUrl: surfaceType + '://' + (label || 'browser'),
+                        currentTitle: currentTitle,
                         timestamp: new Date().toISOString(),
                         type: 'LIVE_UPDATE'
                     })
@@ -654,6 +681,7 @@ def join_exam():
             if (stream) stream.getTracks().forEach(t => t.stop());
             stream = null;
             activeStudentId = null;
+            lastFlaggedLabel = '';
 
             document.getElementById('setupForm').style.display = '';
             document.getElementById('activeView').style.display = 'none';
@@ -664,7 +692,6 @@ def join_exam():
             document.getElementById('preview').style.display = 'none';
         }
 
-        // Enter key triggers join
         document.getElementById('studentId').addEventListener('keydown', function(e) {
             if (e.key === 'Enter') startSharing();
         });
@@ -954,7 +981,13 @@ def monitor():
                 students[id] = { id: id, status: 'safe', violations: 0, site: '', screenshot: null };
             }
             students[id].screenshot = data.screenshot;
-            students[id].site = extractDomain(data.currentUrl);
+            // Use tab title if available (screen share gives us this), otherwise extract domain
+            var title = data.currentTitle || '';
+            if (title && title !== 'Screen Share' && title !== 'Full Screen') {
+                students[id].site = title;
+            } else {
+                students[id].site = extractDomain(data.currentUrl);
+            }
             render();
             if (modalStudentId === id) updateModal(id);
         }
