@@ -522,14 +522,23 @@ def join_exam():
     <script>
         let stream = null;
         let captureInterval = null;
+        let activeStudentId = null;
+        let tabAwayCount = 0;
         const canvas = document.createElement('canvas');
         const ctx = canvas.getContext('2d');
         const video = document.createElement('video');
+
+        // AI sites to look for in the title bar of captured screenshots
+        // (we can't get URL from getDisplayMedia, but we CAN read the
+        //  page title from the shared tab's document.title via the
+        //  browser tab bar visible in the screenshot — however the
+        //  reliable method is tab visibility detection below)
 
         async function startSharing() {
             const idInput = document.getElementById('studentId');
             const studentId = idInput.value.trim();
             if (!studentId) { idInput.focus(); return; }
+            activeStudentId = studentId;
 
             document.getElementById('joinBtn').disabled = true;
             document.getElementById('status').textContent = 'Requesting screen access...';
@@ -564,6 +573,52 @@ def join_exam():
             }
         }
 
+        // Detect when student leaves this tab (switches to another app/tab)
+        document.addEventListener('visibilitychange', function() {
+            if (!activeStudentId || !stream) return;
+
+            if (document.hidden) {
+                tabAwayCount++;
+                // Student left the exam tab — capture what they see and flag it
+                sendFlag(activeStudentId, 'TAB_SWITCH', 'Student left exam tab (switch #' + tabAwayCount + ')');
+            }
+        });
+
+        // Also detect window blur (catches Alt-Tab, clicking other windows)
+        window.addEventListener('blur', function() {
+            if (!activeStudentId || !stream) return;
+            tabAwayCount++;
+            sendFlag(activeStudentId, 'FOCUS_LOST', 'Student switched away from exam (switch #' + tabAwayCount + ')');
+        });
+
+        async function sendFlag(studentId, flagType, detail) {
+            // Capture current screenshot for evidence
+            let screenshot = null;
+            if (stream && stream.active) {
+                canvas.width = video.videoWidth;
+                canvas.height = video.videoHeight;
+                ctx.drawImage(video, 0, 0);
+                screenshot = canvas.toDataURL('image/jpeg', 0.6);
+            }
+
+            try {
+                await fetch('/flag', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        studentId: studentId,
+                        domain: flagType,
+                        fullUrl: detail,
+                        flagType: flagType,
+                        timestamp: new Date().toISOString(),
+                        screenshot: screenshot
+                    })
+                });
+            } catch (e) {
+                console.error('Failed to send flag:', e);
+            }
+        }
+
         async function captureAndSend(studentId) {
             if (!stream || !stream.active) return;
 
@@ -575,10 +630,6 @@ def join_exam():
 
             // Show preview
             document.getElementById('previewImg').src = screenshot;
-
-            // Detect if current page might be flagged
-            // (We can't access the shared tab's URL from getDisplayMedia,
-            //  so the extension handles URL detection. This just sends the screen.)
 
             try {
                 await fetch('/live-update', {
@@ -602,6 +653,7 @@ def join_exam():
             if (captureInterval) clearInterval(captureInterval);
             if (stream) stream.getTracks().forEach(t => t.stop());
             stream = null;
+            activeStudentId = null;
 
             document.getElementById('setupForm').style.display = '';
             document.getElementById('activeView').style.display = 'none';
