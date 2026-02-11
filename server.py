@@ -596,9 +596,10 @@ def join_exam():
                     });
                     usingCamera = true;
                 } else {
-                    // Desktop: use screen share
+                    // Desktop: prefer tab sharing so we get the tab title for AI detection
                     stream = await navigator.mediaDevices.getDisplayMedia({
-                        video: { cursor: 'always' },
+                        video: { cursor: 'always', displaySurface: 'browser' },
+                        preferCurrentTab: false,
                         audio: false
                     });
                     usingCamera = false;
@@ -623,9 +624,9 @@ def join_exam():
                 // Handle user stopping share via browser UI
                 stream.getVideoTracks()[0].onended = () => stopSharing();
 
-                // Capture and send every 3 seconds
+                // Capture and send every 1 second for near-real-time streaming
                 captureAndSend(studentId);
-                captureInterval = setInterval(() => captureAndSend(studentId), 3000);
+                captureInterval = setInterval(() => captureAndSend(studentId), 1000);
 
             } catch (err) {
                 document.getElementById('status').className = 'status error';
@@ -636,19 +637,23 @@ def join_exam():
             }
         }
 
-        // Detect when student leaves this tab
-        document.addEventListener('visibilitychange', function() {
+        // Detect when student leaves this tab (debounced to avoid duplicate flags)
+        let lastSwitchTime = 0;
+        function handleTabLeave(type, detail) {
             if (!activeStudentId || !stream) return;
-            if (document.hidden) {
-                tabAwayCount++;
-                sendFlag(activeStudentId, 'TAB_SWITCH', 'Student left exam tab (switch #' + tabAwayCount + ')');
-            }
+            const now = Date.now();
+            if (now - lastSwitchTime < 2000) return; // debounce 2s
+            lastSwitchTime = now;
+            tabAwayCount++;
+            sendFlag(activeStudentId, type, detail + ' (switch #' + tabAwayCount + ')');
+        }
+
+        document.addEventListener('visibilitychange', function() {
+            if (document.hidden) handleTabLeave('TAB_SWITCH', 'Student left exam tab');
         });
 
         window.addEventListener('blur', function() {
-            if (!activeStudentId || !stream) return;
-            tabAwayCount++;
-            sendFlag(activeStudentId, 'FOCUS_LOST', 'Student switched away from exam (switch #' + tabAwayCount + ')');
+            handleTabLeave('FOCUS_LOST', 'Student switched away from exam');
         });
 
         async function sendFlag(studentId, flagType, detail, domain) {
@@ -705,11 +710,13 @@ def join_exam():
                 else if (surfaceType === 'monitor') currentTitle = 'Full Screen';
             }
 
-            canvas.width = video.videoWidth;
-            canvas.height = video.videoHeight;
-            ctx.drawImage(video, 0, 0);
+            // Scale down for fast streaming — cap at 960px wide
+            const scale = Math.min(1, 960 / (video.videoWidth || 960));
+            canvas.width = Math.round((video.videoWidth || 960) * scale);
+            canvas.height = Math.round((video.videoHeight || 540) * scale);
+            ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
 
-            const screenshot = canvas.toDataURL('image/jpeg', 0.5);
+            const screenshot = canvas.toDataURL('image/jpeg', 0.3);
             document.getElementById('previewImg').src = screenshot;
 
             try {
@@ -863,7 +870,7 @@ def monitor():
             justify-content: center;
             overflow: hidden;
         }
-        .tile-screen img { width: 100%; height: 100%; object-fit: cover; }
+        .tile-screen img { width: 100%; height: 100%; object-fit: cover; transition: opacity 0.15s; }
         .tile-screen .empty { color: #bbb; font-size: 12px; }
         .tile-info {
             padding: 8px 10px;
@@ -1218,7 +1225,7 @@ def monitor():
         document.getElementById('modal').addEventListener('click', function(e) { if (e.target === this) closeModal(); });
         document.addEventListener('keydown', function(e) { if (e.key === 'Escape') closeModal(); });
 
-        // Render
+        // Render — in-place DOM updates to avoid flicker at 1s intervals
         function renderGrid() {
             const grid = document.getElementById('grid');
             const empty = document.getElementById('empty');
@@ -1230,22 +1237,59 @@ def monitor():
             if (ids.length === 0) { empty.style.display = ''; grid.innerHTML = ''; return; }
             empty.style.display = 'none';
 
-            grid.innerHTML = ids.map(id => {
+            ids.forEach(id => {
                 const s = students[id];
                 const flagged = s.status === 'flagged';
-                return '<div class="tile' + (flagged ? ' flagged' : '') + '" onclick="openModal(\\'' + id + '\\')">'
-                    + '<div class="tile-screen">'
-                    + (s.screenshot ? '<img src="' + s.screenshot + '">' : '<span class="empty">No screen yet</span>')
-                    + '</div>'
-                    + '<div class="tile-info">'
-                    + '<div class="indicator' + (flagged ? ' red' : '') + '"></div>'
-                    + '<div class="tile-text">'
-                    + '<div class="tile-id">' + s.id + '</div>'
-                    + '<div class="tile-meta">' + (s.site || 'idle') + '</div>'
-                    + '</div>'
-                    + (s.violations > 0 ? '<div class="tile-violations">' + s.violations + '</div>' : '')
-                    + '</div></div>';
-            }).join('');
+                let tile = document.getElementById('tile-' + id);
+
+                if (!tile) {
+                    tile = document.createElement('div');
+                    tile.id = 'tile-' + id;
+                    tile.className = 'tile';
+                    tile.onclick = function() { openModal(id); };
+                    tile.innerHTML =
+                        '<div class="tile-screen">'
+                        + '<img style="display:none">'
+                        + '<span class="empty">No screen yet</span>'
+                        + '</div>'
+                        + '<div class="tile-info">'
+                        + '<div class="indicator"></div>'
+                        + '<div class="tile-text">'
+                        + '<div class="tile-id"></div>'
+                        + '<div class="tile-meta"></div>'
+                        + '</div>'
+                        + '<div class="tile-violations" style="display:none"></div>'
+                        + '</div>';
+                    grid.appendChild(tile);
+                }
+
+                tile.className = 'tile' + (flagged ? ' flagged' : '');
+                const img = tile.querySelector('.tile-screen img');
+                const emptyLabel = tile.querySelector('.tile-screen .empty');
+                if (s.screenshot) {
+                    img.src = s.screenshot;
+                    img.style.display = '';
+                    if (emptyLabel) emptyLabel.style.display = 'none';
+                } else {
+                    img.style.display = 'none';
+                    if (emptyLabel) emptyLabel.style.display = '';
+                }
+                tile.querySelector('.indicator').className = 'indicator' + (flagged ? ' red' : '');
+                tile.querySelector('.tile-id').textContent = s.id;
+                tile.querySelector('.tile-meta').textContent = s.site || 'idle';
+                const vBadge = tile.querySelector('.tile-violations');
+                if (s.violations > 0) {
+                    vBadge.textContent = s.violations;
+                    vBadge.style.display = '';
+                } else {
+                    vBadge.style.display = 'none';
+                }
+            });
+
+            Array.from(grid.children).forEach(el => {
+                const tileId = el.id.replace('tile-', '');
+                if (!students[tileId]) el.remove();
+            });
         }
 
         function renderLog() {
