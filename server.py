@@ -499,6 +499,22 @@ def join_exam():
             cursor: pointer;
         }
         .stop-btn:hover { background: #ffeaea; }
+        .mode-note {
+            font-size: 11px;
+            color: #999;
+            margin-top: 8px;
+            line-height: 1.4;
+        }
+        .mode-note strong { color: #666; }
+        @media (max-width: 500px) {
+            body { padding: 12px; }
+            .card { padding: 24px 20px; width: 95%; }
+            .card h1 { font-size: 16px; }
+            .card p { font-size: 12px; }
+            .field input { font-size: 16px; padding: 12px; }
+            .btn { padding: 14px; font-size: 15px; }
+            .stop-btn { padding: 10px 24px; font-size: 13px; }
+        }
     </style>
 </head>
 <body>
@@ -551,6 +567,17 @@ def join_exam():
             return null;
         }
 
+        // Detect if screen share is available (not on mobile)
+        const canScreenShare = !!(navigator.mediaDevices && navigator.mediaDevices.getDisplayMedia);
+        const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
+        let usingCamera = false;
+
+        // Update button text for mobile
+        if (isMobile || !canScreenShare) {
+            document.getElementById('joinBtn').textContent = 'Share Camera & Join';
+            document.getElementById('intro').textContent = 'Enter your student ID and share your camera to join the monitored exam session.';
+        }
+
         async function startSharing() {
             const idInput = document.getElementById('studentId');
             const studentId = idInput.value.trim();
@@ -558,15 +585,28 @@ def join_exam():
             activeStudentId = studentId;
 
             document.getElementById('joinBtn').disabled = true;
-            document.getElementById('status').textContent = 'Requesting screen access...';
+            document.getElementById('status').textContent = isMobile ? 'Requesting camera access...' : 'Requesting screen access...';
 
             try {
-                stream = await navigator.mediaDevices.getDisplayMedia({
-                    video: { cursor: 'always' },
-                    audio: false
-                });
+                if (isMobile || !canScreenShare) {
+                    // Mobile: use front camera
+                    stream = await navigator.mediaDevices.getUserMedia({
+                        video: { facingMode: 'user', width: { ideal: 1280 }, height: { ideal: 720 } },
+                        audio: false
+                    });
+                    usingCamera = true;
+                } else {
+                    // Desktop: use screen share
+                    stream = await navigator.mediaDevices.getDisplayMedia({
+                        video: { cursor: 'always' },
+                        audio: false
+                    });
+                    usingCamera = false;
+                }
 
                 video.srcObject = stream;
+                video.setAttribute('playsinline', '');
+                video.setAttribute('autoplay', '');
                 await video.play();
 
                 // Show active state
@@ -575,6 +615,10 @@ def join_exam():
                 document.getElementById('intro').textContent = 'Student: ' + studentId;
                 document.getElementById('status').textContent = '';
                 document.getElementById('preview').style.display = '';
+
+                if (usingCamera) {
+                    document.querySelector('.status.active').innerHTML = '<span class="dot"></span>Camera is being shared';
+                }
 
                 // Handle user stopping share via browser UI
                 stream.getVideoTracks()[0].onended = () => stopSharing();
@@ -585,7 +629,9 @@ def join_exam():
 
             } catch (err) {
                 document.getElementById('status').className = 'status error';
-                document.getElementById('status').textContent = 'Screen share was denied or cancelled.';
+                document.getElementById('status').textContent = isMobile
+                    ? 'Camera access was denied. Please allow camera permissions.'
+                    : 'Screen share was denied or cancelled.';
                 document.getElementById('joinBtn').disabled = false;
             }
         }
@@ -635,19 +681,28 @@ def join_exam():
         async function captureAndSend(studentId) {
             if (!stream || !stream.active) return;
 
-            // Read the shared surface label — Chrome puts the tab/window title here
             const track = stream.getVideoTracks()[0];
             const label = track.label || '';
             const settings = track.getSettings ? track.getSettings() : {};
             const surfaceType = settings.displaySurface || 'unknown';
+            let currentTitle = '';
 
-            // Check for AI sites in the label
-            const aiMatch = detectAI(label);
-            if (aiMatch && label !== lastFlaggedLabel) {
-                lastFlaggedLabel = label;
-                sendFlag(studentId, 'AI_DETECTED',
-                    'AI tool detected: ' + label + ' (surface: ' + surfaceType + ')',
-                    aiMatch);
+            if (usingCamera) {
+                // Camera mode (mobile) — no AI label detection, just send frames
+                currentTitle = 'Camera Feed';
+            } else {
+                // Screen share mode — check track label for AI sites
+                const aiMatch = detectAI(label);
+                if (aiMatch && label !== lastFlaggedLabel) {
+                    lastFlaggedLabel = label;
+                    sendFlag(studentId, 'AI_DETECTED',
+                        'AI tool detected: ' + label + ' (surface: ' + surfaceType + ')',
+                        aiMatch);
+                }
+                currentTitle = label || 'Screen Share';
+                if (surfaceType === 'browser') currentTitle = label || 'Browser Tab';
+                else if (surfaceType === 'window') currentTitle = label || 'Window';
+                else if (surfaceType === 'monitor') currentTitle = 'Full Screen';
             }
 
             canvas.width = video.videoWidth;
@@ -657,12 +712,6 @@ def join_exam():
             const screenshot = canvas.toDataURL('image/jpeg', 0.5);
             document.getElementById('previewImg').src = screenshot;
 
-            // Build a meaningful title from what we know
-            let currentTitle = label || 'Screen Share';
-            if (surfaceType === 'browser') currentTitle = label || 'Browser Tab';
-            else if (surfaceType === 'window') currentTitle = label || 'Window';
-            else if (surfaceType === 'monitor') currentTitle = 'Full Screen';
-
             try {
                 await fetch('/live-update', {
                     method: 'POST',
@@ -670,7 +719,7 @@ def join_exam():
                     body: JSON.stringify({
                         studentId: studentId,
                         screenshot: screenshot,
-                        currentUrl: surfaceType + '://' + (label || 'browser'),
+                        currentUrl: usingCamera ? 'camera://front' : surfaceType + '://' + (label || 'browser'),
                         currentTitle: currentTitle,
                         timestamp: new Date().toISOString(),
                         type: 'LIVE_UPDATE'
@@ -687,13 +736,17 @@ def join_exam():
             stream = null;
             activeStudentId = null;
             lastFlaggedLabel = '';
+            usingCamera = false;
 
             document.getElementById('setupForm').style.display = '';
             document.getElementById('activeView').style.display = 'none';
             document.getElementById('joinBtn').disabled = false;
-            document.getElementById('intro').textContent = 'Enter your student ID and share your screen to join the monitored exam session.';
+            const defaultMsg = (isMobile || !canScreenShare)
+                ? 'Enter your student ID and share your camera to join the monitored exam session.'
+                : 'Enter your student ID and share your screen to join the monitored exam session.';
+            document.getElementById('intro').textContent = defaultMsg;
             document.getElementById('status').className = 'status';
-            document.getElementById('status').textContent = 'Screen sharing stopped.';
+            document.getElementById('status').textContent = 'Sharing stopped.';
             document.getElementById('preview').style.display = 'none';
         }
 
@@ -932,6 +985,36 @@ def monitor():
             width: 640px; height: 400px;
             display: flex; align-items: center; justify-content: center;
             color: #bbb; font-size: 14px; background: #f5f5f5;
+        }
+
+        /* Mobile responsive */
+        @media (max-width: 600px) {
+            .topbar {
+                flex-wrap: wrap;
+                gap: 8px;
+                padding: 8px 12px;
+            }
+            .topbar-left { gap: 8px; flex-wrap: wrap; width: 100%; }
+            .topbar-left .sep { display: none; }
+            .topbar h1 { font-size: 13px; }
+            .topbar-nav { margin-left: 0; }
+            .topbar-nav button { padding: 4px 10px; font-size: 11px; }
+            .topbar-stats { width: 100%; justify-content: flex-start; gap: 14px; font-size: 11px; }
+            .main { padding: 10px; }
+            .grid { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px; }
+            .tile-info { padding: 6px 8px; gap: 6px; }
+            .tile-id { font-size: 11px; }
+            .tile-meta { font-size: 10px; }
+            .log-table { display: block; overflow-x: auto; -webkit-overflow-scrolling: touch; }
+            .log-table th { top: 0; font-size: 10px; padding: 6px 8px; white-space: nowrap; }
+            .log-table td { padding: 8px; font-size: 11px; }
+            .log-thumb { width: 80px; height: 50px; }
+            .log-detail { max-width: 150px; }
+            .modal-box { max-width: 96vw; max-height: 96vh; border-radius: 6px; }
+            .modal-box img { max-width: 96vw; max-height: calc(96vh - 44px); }
+            .modal-no-screen { width: 90vw; height: 50vw; }
+            .modal-bar { padding: 8px 12px; font-size: 11px; }
+            .empty-state { padding: 40px 16px; font-size: 13px; }
         }
     </style>
 </head>
