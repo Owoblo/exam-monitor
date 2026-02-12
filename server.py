@@ -1379,32 +1379,41 @@ def monitor():
             }
         }
 
-        // SSE
-        const eventSource = new EventSource('/stream');
-        eventSource.onmessage = function(e) {
-            const msg = JSON.parse(e.data);
-            if (msg.type === 'new_flag') handleFlag(msg.data);
-            else if (msg.type === 'live_screen_update') handleLive(msg.studentId, msg.data);
-            else if (msg.type === 'webrtc_offer') {
-                // New student wants to stream — connect!
-                connectToStudent(msg.studentId, msg.offer);
-            }
-        };
+        // Reliable polling — works even when SSE dies on Render
+        let knownFlagCount = 0;
 
-        async function loadInitial() {
+        async function pollScreens() {
             try {
                 const res = await fetch('/live-screens');
                 const screens = await res.json();
                 Object.keys(screens).forEach(id => handleLive(id, screens[id]));
             } catch(e) {}
-            // Load existing flags into the log
+        }
+
+        async function pollFlags() {
             try {
                 const res = await fetch('/flags');
-                const flags = await res.json();
-                flags.reverse().forEach(f => addToLog(f, true));
-                renderLog();
+                const allFlags = await res.json();
+                // Only process new flags we haven't seen
+                if (allFlags.length > knownFlagCount) {
+                    const newOnes = allFlags.slice(0, allFlags.length - knownFlagCount);
+                    newOnes.reverse().forEach(f => {
+                        handleFlag({
+                            studentId: f.studentId,
+                            domain: f.domain,
+                            fullUrl: f.fullUrl,
+                            flagType: f.flagType,
+                            timestamp: f.timestamp,
+                            screenshot: f.screenshot,
+                            received_at: f.received_at
+                        });
+                    });
+                    knownFlagCount = allFlags.length;
+                }
             } catch(e) {}
-            // Connect to any existing WebRTC offers (student joined before professor)
+        }
+
+        async function pollWebRTC() {
             try {
                 const res = await fetch('/signal/offers');
                 const offers = await res.json();
@@ -1412,6 +1421,37 @@ def monitor():
                     if (!peerConnections[id]) connectToStudent(id, offers[id]);
                 });
             } catch(e) {}
+        }
+
+        // Also try SSE as a bonus (faster updates when it works)
+        try {
+            const eventSource = new EventSource('/stream');
+            eventSource.onmessage = function(e) {
+                const msg = JSON.parse(e.data);
+                if (msg.type === 'new_flag') handleFlag(msg.data);
+                else if (msg.type === 'live_screen_update') handleLive(msg.studentId, msg.data);
+                else if (msg.type === 'webrtc_offer') {
+                    connectToStudent(msg.studentId, msg.offer);
+                }
+            };
+        } catch(e) {}
+
+        // Poll every 1.5s for screens, 2s for flags, 5s for WebRTC offers
+        setInterval(pollScreens, 1500);
+        setInterval(pollFlags, 2000);
+        setInterval(pollWebRTC, 5000);
+
+        async function loadInitial() {
+            await pollScreens();
+            // Load all existing flags
+            try {
+                const res = await fetch('/flags');
+                const allFlags = await res.json();
+                allFlags.reverse().forEach(f => addToLog(f, true));
+                knownFlagCount = allFlags.length;
+                renderLog();
+            } catch(e) {}
+            await pollWebRTC();
         }
 
         function handleLive(id, data) {
